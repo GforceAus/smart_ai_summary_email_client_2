@@ -1,0 +1,86 @@
+# Project: Smart AI Summary Email Client 2
+
+## Project Overview
+Enhanced version of the smart AI summary email client that processes field operations data from PostgreSQL and generates intelligent email summaries using AI.
+
+## Directory Structure
+```text
+.
+├── data
+│   ├── processed
+│   │   ├── supplier_map.duckdb
+│   │   └── training_approved_emails.duckdb
+│   └── raw
+│       └── email_dot_eml_format
+├── Devops
+├── justfile
+├── logs
+├── main.py
+├── pyproject.toml
+├── README.md
+├── src
+│   ├── cli
+│   │   ├── summary.py
+│   │   └── tasks.py
+│   ├── database
+│   │   ├── connection.py
+│   │   └── sync_suppliers.py
+│   ├── generators
+│   │   └── email_generator.py
+│   ├── processors
+│   │   └── ingest_eml.py
+│   └── utils
+├── tests
+└── uv.lock
+```
+
+## Key Components
+- **Database Layer**: PostgreSQL connection utilities and local DuckDB synchronization in `src/database/`
+- **Data Processing**: Email parsing, body cleaning, and supplier detection in `src/processors/`
+- **AI Generation**: Few-shot AI email summary generation in `src/generators/` utilizing local Ollama LLMs.
+- **CLI Interface**: Specialized reporting tools for metrics and task-level details in `src/cli/`
+
+## Dependencies
+- psycopg2-binary: PostgreSQL connectivity
+- python-dotenv: Environment variable management
+- duckdb: Fast local analytics and metadata storage
+- requests: API communication for Ollama
+- pandas: Data manipulation
+
+## Environment Variables
+- PGHOST, PGPORT, PGDATABASE, PGUSER, PGPASSWORD: PostgreSQL connection
+- OLLAMA_URL, OLLAMA_MODEL: AI model configuration (e.g., Qwen 2.5)
+
+## Architecture
+```
+PostgreSQL → View (v_supplier_email_summary) → Python Logic (Aggregation/Triage) → Ollama (Few-shot) → Email
+```
+
+## Key Files
+- `src/database/connection.py`: PostgreSQL connection manager
+- `src/database/sync_suppliers.py`: PostgreSQL to local DuckDB supplier mapping sync
+- `src/processors/ingest_eml.py`: Email parsing and supplier detection
+- `src/generators/email_generator.py`: AI-powered email summary generator with task aggregation
+- `src/cli/summary.py`: CLI for fetching supplier performance summaries
+- `src/cli/tasks.py`: CLI for fetching detailed task exception rows in tabular format
+
+## Data Flow
+1. **Supplier Sync**: Fetch active clients/suppliers from Postgres into `data/processed/supplier_map.duckdb`.
+2. **Email Ingestion**: Parse .eml files with robust regex-based supplier detection and body cleaning.
+3. **Data Retrieval**: Fetch curated performance data from the `field_ops.v_supplier_email_summary` view.
+4. **Task Aggregation**: Collapse repetitive task results (e.g., "Not Ranged") to optimize LLM token usage.
+5. **AI Generation**: Construct few-shot prompts using historical examples and generated summaries via Ollama.
+
+## CLI Usage
+- `just datasync_supplier`: Refresh local supplier map.
+- `just supplier_summary <supplier> [frequency]`: Get high-level metrics.
+- `just supplier_tasks <supplier> [frequency] [limit]`: Get detailed task table.
+- `just generate <supplier> [frequency]`: Generate AI summary email.
+- `just generate_dry <supplier> [frequency]`: Show the LLM prompt only (dry-run).
+
+---
+### Recent Changes (Authored by Gemini)
+- **Task Aggregation Logic**: Implemented `aggregate_tasks` in `email_generator.py` to collapse repetitive task results, reducing token usage by up to 75% for large datasets.
+- **Generator Debug & Optimization**: Fixed syntax errors in the generator, moved critical imports to top-level, and increased Ollama context window (`num_ctx`) to 8192.
+- **Tabular CLI Reporting**: Updated `src/cli/tasks.py` to display detailed task records with IDs in a clean, terminal-friendly table.
+- **Robust Regex Detection**: Transitioned from `\b` word boundaries to lookaround-based regex in `ingest_eml.py` to handle keywords with digits and special characters.
