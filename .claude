@@ -60,7 +60,7 @@ PostgreSQL → View (v_supplier_email_summary) → Python Logic (Aggregation/Tri
 - `src/database/connection.py`: PostgreSQL connection manager
 - `src/database/sync_suppliers.py`: PostgreSQL to local DuckDB supplier mapping sync
 - `src/processors/ingest_eml.py`: Email parsing and supplier detection
-- `src/generators/email_generator.py`: AI-powered email summary generator with task aggregation
+- `src/generators/email_generator.py`: AI-powered email summary generator with task aggregation and Ollama integration
 - `src/cli/summary.py`: CLI for fetching supplier performance summaries
 - `src/cli/tasks.py`: CLI for fetching detailed task exception rows in tabular format
 
@@ -79,8 +79,10 @@ PostgreSQL → View (v_supplier_email_summary) → Python Logic (Aggregation/Tri
 - `just generate_dry <supplier> [frequency]`: Show the LLM prompt only (dry-run).
 
 ---
-### Recent Changes (Authored by Gemini)
-- **Task Aggregation Logic**: Implemented `aggregate_tasks` in `email_generator.py` to collapse repetitive task results, reducing token usage by up to 75% for large datasets.
-- **Generator Debug & Optimization**: Fixed syntax errors in the generator, moved critical imports to top-level, and increased Ollama context window (`num_ctx`) to 8192.
-- **Tabular CLI Reporting**: Updated `src/cli/tasks.py` to display detailed task records with IDs in a clean, terminal-friendly table.
-- **Robust Regex Detection**: Transitioned from `\b` word boundaries to lookaround-based regex in `ingest_eml.py` to handle keywords with digits and special characters.
+### Recent Changes
+- **Email Generator Implementation**: Created comprehensive `src/generators/email_generator.py` with Ollama LLM integration for automated email generation
+- **Task Aggregation Logic**: Implemented `aggregate_tasks` function to collapse repetitive task results, reducing token usage by up to 75% for large datasets
+- **Token Management**: Added intelligent prompt sizing with configurable limits (2,800 warning, 4,000 hard limit) and few-shot example trimming
+- **Professional System Prompt**: Designed structured output format with required sections (Overview, Completed Activity, Issues & Flags, Rep Comments, Summary)
+- **Robust Error Handling**: Comprehensive timeout, connection, and validation error handling for Ollama API calls
+- **CLI Integration**: Full command-line interface with dry-run mode for prompt inspection and output file saving
