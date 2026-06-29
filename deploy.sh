@@ -95,7 +95,7 @@ case "${1:-help}" in
   #   fortnightly — every Monday 07:00 (script skips wrong ISO weeks)
   #   monthly    — last day of month 07:00
   schedule)
-    _banner "Installing 3 timers: weekly (Mon 23:00) · fortnightly (every other Mon 23:00) · monthly (last day 07:00)"
+    _banner "Installing 3 timers: weekly (Mon 23:00) · fortnightly (every other Mon 23:00) · monthly (last day 23:00)"
     _ssh bash <<'ENDSSH'
 set -e
 mkdir -p ~/.config/systemd/user
@@ -166,10 +166,10 @@ SVC
 
 cat > ~/.config/systemd/user/smart-email-monthly.timer <<TMR
 [Unit]
-Description=Smart Email — monthly (last day of month 07:00)
+Description=Smart Email — monthly (last day of month 23:00)
 
 [Timer]
-OnCalendar=*-*~1 07:00:00
+OnCalendar=*-*~1 23:00:00
 Persistent=true
 
 [Install]
@@ -232,7 +232,7 @@ EOF
     echo "  schedule                     Install all 3 timers:"
     echo "                                 weekly     → every Monday 23:00"
     echo "                                 fortnightly → every other Monday 23:00"
-    echo "                                 monthly    → last day of month 07:00"
+    echo "                                 monthly    → last day of month 23:00"
     echo "  change-time FREQ HH:MM       Update timer for one frequency"
     echo "  next-run                     Show next fire time for all 3 timers"
     echo ""

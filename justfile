@@ -42,7 +42,7 @@ help:
     @echo "  ./deploy.sh schedule                     Install all 3 timers:"
     @echo "                                             weekly     → every Mon 23:00"
     @echo "                                             fortnightly → every other Mon 23:00"
-    @echo "                                             monthly    → last day of month 07:00"
+    @echo "                                             monthly    → last day of month 23:00"
     @echo "  ./deploy.sh change-time FREQ HH:MM       Change time for one frequency"
     @echo "  ./deploy.sh next-run                     Show next fire for all 3 timers"
     @echo ""
