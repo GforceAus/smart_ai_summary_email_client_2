@@ -5,6 +5,6 @@ services:
     environment:
       UV_CACHE_DIR: /tmp/uv-cache
     volumes:
-      - ./data:/app/data
+      - ./data:/app/data:z
     restart: "no"
     command: uv run python -m src.runners.full_run
