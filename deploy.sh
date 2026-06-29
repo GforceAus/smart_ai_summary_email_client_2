@@ -91,11 +91,11 @@ case "${1:-help}" in
 
   # ── schedule ───────────────────────────────────────────────────────────────
   # Installs 3 systemd user timers:
-  #   weekly     — every Tuesday 07:00
-  #   fortnightly — every Tuesday 07:00 (script skips wrong ISO weeks)
+  #   weekly     — every Monday 07:00
+  #   fortnightly — every Monday 07:00 (script skips wrong ISO weeks)
   #   monthly    — last day of month 07:00
   schedule)
-    _banner "Installing 3 timers: weekly (Tue 07:00) · fortnightly (every other Tue 07:00) · monthly (last day 07:00)"
+    _banner "Installing 3 timers: weekly (Mon 23:00) · fortnightly (every other Mon 23:00) · monthly (last day 07:00)"
     _ssh bash <<'ENDSSH'
 set -e
 mkdir -p ~/.config/systemd/user
@@ -116,10 +116,10 @@ SVC
 
 cat > ~/.config/systemd/user/smart-email-weekly.timer <<TMR
 [Unit]
-Description=Smart Email — weekly (every Monday 07:00)
+Description=Smart Email — weekly (every Monday 23:00)
 
 [Timer]
-OnCalendar=Mon *-*-* 07:00:00
+OnCalendar=Mon *-*-* 23:00:00
 Persistent=true
 
 [Install]
@@ -141,10 +141,10 @@ SVC
 
 cat > ~/.config/systemd/user/smart-email-fortnightly.timer <<TMR
 [Unit]
-Description=Smart Email — fortnightly (every Monday, script skips even ISO weeks)
+Description=Smart Email — fortnightly (every Monday 23:00, script skips even ISO weeks)
 
 [Timer]
-OnCalendar=Mon *-*-* 07:00:00
+OnCalendar=Mon *-*-* 23:00:00
 Persistent=true
 
 [Install]
@@ -230,13 +230,13 @@ EOF
     echo "  status                       Container + all timer status"
     echo "  logs [weekly|fortnightly|monthly]  Show logs (default: all)"
     echo "  schedule                     Install all 3 timers:"
-    echo "                                 weekly     → every Monday 07:00"
-    echo "                                 fortnightly → every other Monday 07:00"
+    echo "                                 weekly     → every Monday 23:00"
+    echo "                                 fortnightly → every other Monday 23:00"
     echo "                                 monthly    → last day of month 07:00"
     echo "  change-time FREQ HH:MM       Update timer for one frequency"
     echo "  next-run                     Show next fire time for all 3 timers"
     echo ""
-    echo "  Note: fortnightly runs every Tuesday but skips even ISO weeks."
+    echo "  Note: fortnightly runs every Monday but skips even ISO weeks."
     echo "  Set FORTNIGHTLY_PARITY=even in .env to flip to even weeks."
     echo ""
     echo "First deploy:"
