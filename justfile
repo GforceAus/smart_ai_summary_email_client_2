@@ -17,6 +17,7 @@ help:
     @echo "  just list_clients                    List all clients with frequency + status"
     @echo "  just add_client SUPPLIER [FREQ]      Add new client (active immediately)"
     @echo "  just set_frequency SUPPLIER FREQ     Change weekly/fortnightly/monthly"
+    @echo "  just set_manager SUPPLIER EMAIL      Set account manager (primary recipient)"
     @echo "  just activate SUPPLIER               Start sending emails to a client"
     @echo "  just deactivate SUPPLIER             Stop sending emails (keeps in table)"
     @echo ""
@@ -99,6 +100,11 @@ add_client supplier frequency='monthly':
 # Usage: just set_frequency NULON fortnightly
 set_frequency supplier frequency:
     uv run python -m src.cli.manage set-frequency {{supplier}} {{frequency}}
+
+# Assign account manager email for a client
+# Usage: just set_manager NULON ACappellotto@gforceaus.com
+set_manager supplier email:
+    uv run python -m src.cli.manage set-manager {{supplier}} {{email}}
 
 # Start sending emails to a client
 # Usage: just activate NULON

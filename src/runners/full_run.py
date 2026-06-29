@@ -73,10 +73,12 @@ def main() -> None:
     tracemalloc.start()
     t_total = time.time()
 
+    crm_emails = _parse_emails(CRM_EMAIL_RAW)
+
     if args.supplier:
         con = duckdb.connect(DB_PATH, read_only=True)
         row = con.execute(
-            "SELECT supplier_name, frequency FROM reporting_frequency "
+            "SELECT supplier_name, frequency, account_manager FROM reporting_frequency "
             "WHERE active = true AND supplier_name = ?",
             [args.supplier]
         ).fetchone()
@@ -85,24 +87,30 @@ def main() -> None:
             logger.error(f"Supplier '{args.supplier}' not found or not active in reporting_frequency")
             return
         freq = args.frequency or row[1]
-        suppliers = [(row[0], freq)]
+        suppliers = [(row[0], freq, row[2])]
     else:
         con = duckdb.connect(DB_PATH, read_only=True)
         suppliers = con.execute(
-            "SELECT supplier_name, frequency FROM reporting_frequency "
+            "SELECT supplier_name, frequency, account_manager FROM reporting_frequency "
             "WHERE active = true ORDER BY frequency, supplier_name"
         ).fetchall()
         con.close()
 
-    recipients = _parse_emails(CRM_EMAIL_RAW)
-    logger.info(f"Recipients: {recipients}")
     logger.info(f"Running {len(suppliers)} suppliers...")
 
     results = []
-    for supplier, frequency in suppliers:
+    for supplier, frequency, account_manager in suppliers:
         t0 = time.time()
         mem_before, _ = tracemalloc.get_traced_memory()
         status = "ok"
+
+        # Build recipient list: account manager first, then CRM (deduped)
+        recipients: list[str] = []
+        if account_manager:
+            recipients.append(account_manager)
+        for e in crm_emails:
+            if e not in recipients:
+                recipients.append(e)
 
         try:
             body = generate_email(supplier, frequency)
@@ -136,6 +144,7 @@ def main() -> None:
             "status":    status,
             "time_s":    round(elapsed, 1),
             "mem_mb":    round(mem_delta_mb, 2),
+            "manager":   account_manager or "",
         })
         logger.info(f"{supplier:<40} {status:<12} {elapsed:.1f}s")
 

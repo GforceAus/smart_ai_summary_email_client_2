@@ -56,6 +56,19 @@ def set_frequency(supplier: str, frequency: str):
         print(f"✗ Supplier '{supplier}' not found. Use: just add_client {supplier} {frequency}")
 
 
+def set_manager(supplier: str, email: str):
+    con = duckdb.connect(DB_PATH)
+    con.execute(
+        "UPDATE reporting_frequency SET account_manager = ?, updated_at = CURRENT_TIMESTAMP WHERE supplier_name = ?",
+        [email, supplier],
+    )
+    exists = con.execute(
+        "SELECT 1 FROM reporting_frequency WHERE supplier_name = ?", [supplier]
+    ).fetchone()
+    con.close()
+    print(f"✓ {supplier} account manager set to {email}" if exists else f"✗ '{supplier}' not found")
+
+
 def set_active(supplier: str, active: bool):
     con = duckdb.connect(DB_PATH)
     con.execute(
@@ -84,6 +97,10 @@ def main():
     p.add_argument("supplier")
     p.add_argument("frequency", choices=["weekly", "fortnightly", "monthly"])
 
+    p = sub.add_parser("set-manager", help="Set account manager email for a client")
+    p.add_argument("supplier")
+    p.add_argument("email")
+
     p = sub.add_parser("activate", help="Start sending emails to a client")
     p.add_argument("supplier")
 
@@ -98,6 +115,8 @@ def main():
         add_client(args.supplier, args.frequency)
     elif args.cmd == "set-frequency":
         set_frequency(args.supplier, args.frequency)
+    elif args.cmd == "set-manager":
+        set_manager(args.supplier, args.email)
     elif args.cmd == "activate":
         set_active(args.supplier, True)
     elif args.cmd == "deactivate":
