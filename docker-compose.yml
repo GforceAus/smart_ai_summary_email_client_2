@@ -2,7 +2,6 @@ services:
   smart-email:
     build: .
     env_file: .env
-    user: "${UID}:${GID}"
     environment:
       UV_CACHE_DIR: /tmp/uv-cache
     volumes:
