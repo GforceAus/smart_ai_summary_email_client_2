@@ -69,6 +69,10 @@ full_run:
 full_run_dry:
     uv run python -m src.runners.full_run --dry-run
 
+# Check what each timer would run today (no Gemini, no email — instant)
+schedule_test:
+    uv run python -m src.runners.full_run --check-only
+
 # Test mail — generate and SEND email for a single supplier
 # Usage: just test_mail NULON weekly
 test_mail supplier frequency="weekly":

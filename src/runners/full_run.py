@@ -67,6 +67,8 @@ def main() -> None:
     parser.add_argument("--frequency", choices=["weekly", "fortnightly", "monthly"], help="Frequency for single-supplier run")
     parser.add_argument("--run-for", choices=["weekly", "fortnightly", "monthly", "all"], default="all",
                         help="Run only suppliers of this reporting frequency")
+    parser.add_argument("--check-only", action="store_true",
+                        help="Print what would run without calling Gemini or sending email")
     args = parser.parse_args()
     dry_run = args.dry_run
 
@@ -117,6 +119,34 @@ def main() -> None:
                 [args.run_for]
             ).fetchall()
         con.close()
+
+    if args.check_only:
+        today = datetime.date.today()
+        iso_week = today.isocalendar()[1]
+        parity = os.environ.get("FORTNIGHTLY_PARITY", "odd")
+        print(f"\n{'='*65}")
+        print(f"SCHEDULE CHECK — {today}  (ISO week {iso_week}, {'odd' if iso_week % 2 == 1 else 'even'})")
+        print(f"{'='*65}")
+        for freq in ["weekly", "fortnightly", "monthly"]:
+            con = duckdb.connect(DB_PATH, read_only=True)
+            rows = con.execute(
+                "SELECT supplier_name, account_manager FROM reporting_frequency "
+                "WHERE active = true AND frequency = ? ORDER BY supplier_name",
+                [freq]
+            ).fetchall()
+            con.close()
+            if freq == "fortnightly":
+                is_odd = iso_week % 2 == 1
+                would_run = is_odd if parity == "odd" else not is_odd
+                label = f"WOULD RUN" if would_run else f"WOULD SKIP (wrong week — parity={parity})"
+            else:
+                label = "WOULD RUN"
+            print(f"\n{freq.upper()} — {len(rows)} suppliers — {label}")
+            if args.run_for in ("all", freq):
+                for name, manager in rows:
+                    print(f"  {name:<35} → {manager or '(no manager)'}")
+        print(f"\n{'='*65}\n")
+        return
 
     logger.info(f"Running {len(suppliers)} suppliers...")
 
