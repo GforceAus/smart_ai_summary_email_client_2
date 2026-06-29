@@ -3,6 +3,8 @@ services:
     build: .
     env_file: .env
     user: "${UID}:${GID}"
+    environment:
+      UV_CACHE_DIR: /tmp/uv-cache
     volumes:
       - ./data:/app/data
     restart: "no"
