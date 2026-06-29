@@ -123,10 +123,31 @@ def main() -> None:
     if args.check_only:
         today = datetime.date.today()
         iso_week = today.isocalendar()[1]
+        weekday = today.isoweekday()  # 1=Mon … 7=Sun
         parity = os.environ.get("FORTNIGHTLY_PARITY", "odd")
+        is_tuesday = weekday == 1  # Monday
+        is_last_day = (today + datetime.timedelta(days=1)).month != today.month
+        is_odd_week = iso_week % 2 == 1
+
         print(f"\n{'='*65}")
-        print(f"SCHEDULE CHECK — {today}  (ISO week {iso_week}, {'odd' if iso_week % 2 == 1 else 'even'})")
+        print(f"SCHEDULE CHECK — {today}  "
+              f"({'Monday' if is_tuesday else today.strftime('%A')}, "
+              f"ISO week {iso_week} {'odd' if is_odd_week else 'even'}, "
+              f"{'last day of month' if is_last_day else 'not last day'})")
         print(f"{'='*65}")
+
+        checks = {
+            "weekly":      is_tuesday,
+            "fortnightly": is_tuesday and (is_odd_week if parity == "odd" else not is_odd_week),
+            "monthly":     is_last_day,
+        }
+        reasons = {
+            "weekly":      "not Monday" if not is_tuesday else "",
+            "fortnightly": ("not Monday" if not is_tuesday
+                            else f"wrong ISO week (week {iso_week} is {'odd' if is_odd_week else 'even'}, parity={parity})"),
+            "monthly":     f"not last day of month ({today.strftime('%b %d')})" if not is_last_day else "",
+        }
+
         for freq in ["weekly", "fortnightly", "monthly"]:
             con = duckdb.connect(DB_PATH, read_only=True)
             rows = con.execute(
@@ -135,16 +156,13 @@ def main() -> None:
                 [freq]
             ).fetchall()
             con.close()
-            if freq == "fortnightly":
-                is_odd = iso_week % 2 == 1
-                would_run = is_odd if parity == "odd" else not is_odd
-                label = f"WOULD RUN" if would_run else f"WOULD SKIP (wrong week — parity={parity})"
-            else:
-                label = "WOULD RUN"
+            would_run = checks[freq]
+            label = "WOULD RUN" if would_run else f"SKIP — {reasons[freq]}"
             print(f"\n{freq.upper()} — {len(rows)} suppliers — {label}")
-            if args.run_for in ("all", freq):
+            if would_run and args.run_for in ("all", freq):
                 for name, manager in rows:
                     print(f"  {name:<35} → {manager or '(no manager)'}")
+
         print(f"\n{'='*65}\n")
         return
 

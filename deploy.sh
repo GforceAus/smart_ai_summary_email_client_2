@@ -116,10 +116,10 @@ SVC
 
 cat > ~/.config/systemd/user/smart-email-weekly.timer <<TMR
 [Unit]
-Description=Smart Email — weekly (every Tuesday 07:00)
+Description=Smart Email — weekly (every Monday 07:00)
 
 [Timer]
-OnCalendar=Tue *-*-* 07:00:00
+OnCalendar=Mon *-*-* 07:00:00
 Persistent=true
 
 [Install]
@@ -141,10 +141,10 @@ SVC
 
 cat > ~/.config/systemd/user/smart-email-fortnightly.timer <<TMR
 [Unit]
-Description=Smart Email — fortnightly (every Tuesday, script skips even ISO weeks)
+Description=Smart Email — fortnightly (every Monday, script skips even ISO weeks)
 
 [Timer]
-OnCalendar=Tue *-*-* 07:00:00
+OnCalendar=Mon *-*-* 07:00:00
 Persistent=true
 
 [Install]
@@ -194,7 +194,7 @@ ENDSSH
     _banner "Updating ${FREQ} timer to ${HOUR}:${MIN}"
     case "$FREQ" in
       weekly|fortnightly)
-        CALENDAR="Tue *-*-* ${HOUR}:${MIN}:00"
+        CALENDAR="Mon *-*-* ${HOUR}:${MIN}:00"
         ;;
       monthly)
         CALENDAR="*-*~1 ${HOUR}:${MIN}:00"
@@ -230,8 +230,8 @@ EOF
     echo "  status                       Container + all timer status"
     echo "  logs [weekly|fortnightly|monthly]  Show logs (default: all)"
     echo "  schedule                     Install all 3 timers:"
-    echo "                                 weekly     → every Tuesday 07:00"
-    echo "                                 fortnightly → every other Tuesday 07:00"
+    echo "                                 weekly     → every Monday 07:00"
+    echo "                                 fortnightly → every other Monday 07:00"
     echo "                                 monthly    → last day of month 07:00"
     echo "  change-time FREQ HH:MM       Update timer for one frequency"
     echo "  next-run                     Show next fire time for all 3 timers"
