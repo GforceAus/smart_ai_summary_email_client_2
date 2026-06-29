@@ -10,6 +10,7 @@ Prints a timing/memory table at the end.
 """
 import argparse
 import csv
+import datetime
 import io
 import os
 import re
@@ -64,11 +65,25 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Generate emails but do not send")
     parser.add_argument("--supplier", help="Run a single supplier only")
     parser.add_argument("--frequency", choices=["weekly", "fortnightly", "monthly"], help="Frequency for single-supplier run")
+    parser.add_argument("--run-for", choices=["weekly", "fortnightly", "monthly", "all"], default="all",
+                        help="Run only suppliers of this reporting frequency")
     args = parser.parse_args()
     dry_run = args.dry_run
 
     if dry_run:
         logger.info("DRY RUN — emails will be generated but NOT sent")
+
+    # Fortnightly week-parity gate: run every other Tuesday via ISO week number.
+    # Default: odd weeks (1,3,5...). Set FORTNIGHTLY_PARITY=even in .env to flip.
+    if args.run_for == "fortnightly":
+        iso_week = datetime.date.today().isocalendar()[1]
+        parity = os.environ.get("FORTNIGHTLY_PARITY", "odd")
+        is_odd = iso_week % 2 == 1
+        should_run = is_odd if parity == "odd" else not is_odd
+        if not should_run:
+            logger.info(f"Skipping fortnightly run — ISO week {iso_week} is {'odd' if is_odd else 'even'}, configured for {parity} weeks")
+            return
+        logger.info(f"Fortnightly run — ISO week {iso_week} ({parity})")
 
     tracemalloc.start()
     t_total = time.time()
@@ -90,10 +105,17 @@ def main() -> None:
         suppliers = [(row[0], freq, row[2])]
     else:
         con = duckdb.connect(DB_PATH, read_only=True)
-        suppliers = con.execute(
-            "SELECT supplier_name, frequency, account_manager FROM reporting_frequency "
-            "WHERE active = true ORDER BY frequency, supplier_name"
-        ).fetchall()
+        if args.run_for == "all":
+            suppliers = con.execute(
+                "SELECT supplier_name, frequency, account_manager FROM reporting_frequency "
+                "WHERE active = true ORDER BY frequency, supplier_name"
+            ).fetchall()
+        else:
+            suppliers = con.execute(
+                "SELECT supplier_name, frequency, account_manager FROM reporting_frequency "
+                "WHERE active = true AND frequency = ? ORDER BY supplier_name",
+                [args.run_for]
+            ).fetchall()
         con.close()
 
     logger.info(f"Running {len(suppliers)} suppliers...")

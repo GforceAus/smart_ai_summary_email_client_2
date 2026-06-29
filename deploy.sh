@@ -52,58 +52,124 @@ case "${1:-help}" in
     ;;
 
   # ── run ────────────────────────────────────────────────────────────────────
+  # Usage: ./deploy.sh run [weekly|fortnightly|monthly]  (default: all)
   run)
-    _banner "Triggering manual run on server"
-    _ssh "cd $REMOTE_DIR && docker compose run --rm $SERVICE"
+    FREQ="${2:-all}"
+    _banner "Triggering manual run on server (--run-for $FREQ)"
+    _ssh "cd $REMOTE_DIR && docker compose run --rm $SERVICE uv run python -m src.runners.full_run --run-for $FREQ"
     ;;
 
   run-dry)
-    _banner "Triggering dry run on server"
-    _ssh "cd $REMOTE_DIR && docker compose run --rm $SERVICE uv run python -m src.runners.full_run --dry-run"
+    FREQ="${2:-all}"
+    _banner "Triggering dry run on server (--run-for $FREQ)"
+    _ssh "cd $REMOTE_DIR && docker compose run --rm $SERVICE uv run python -m src.runners.full_run --run-for $FREQ --dry-run"
     ;;
 
   # ── status ─────────────────────────────────────────────────────────────────
   status)
-    _banner "Container + timer status"
+    _banner "Container status"
     _ssh "cd $REMOTE_DIR && docker compose ps"
     echo ""
-    _ssh "systemctl --user status smart-email.timer 2>/dev/null || echo 'Timer not installed yet — run: ./deploy.sh schedule'"
+    _banner "Timer status"
+    _ssh "systemctl --user list-timers 'smart-email-*.timer' --no-pager 2>/dev/null || echo 'No timers installed — run: ./deploy.sh schedule'"
     ;;
 
   # ── logs ───────────────────────────────────────────────────────────────────
   logs)
-    _banner "Recent logs"
-    _ssh "journalctl --user -u smart-email.service -n 100 --no-pager 2>/dev/null || echo 'No systemd logs yet'"
+    FREQ="${2:-}"
+    if [ -n "$FREQ" ]; then
+      _banner "Logs — smart-email-${FREQ}"
+      _ssh "journalctl --user -u smart-email-${FREQ}.service -n 100 --no-pager 2>/dev/null || echo 'No logs yet'"
+    else
+      _banner "Recent logs (all frequencies)"
+      for freq in weekly fortnightly monthly; do
+        echo -e "\n--- $freq ---"
+        _ssh "journalctl --user -u smart-email-${freq}.service -n 20 --no-pager 2>/dev/null || echo '  No logs yet'"
+      done
+    fi
     ;;
 
   # ── schedule ───────────────────────────────────────────────────────────────
+  # Installs 3 systemd user timers:
+  #   weekly     — every Tuesday 07:00
+  #   fortnightly — every Tuesday 07:00 (script skips wrong ISO weeks)
+  #   monthly    — last day of month 07:00
   schedule)
-    TIME="${2:-$DEFAULT_TIME}"
-    HOUR="${TIME%%:*}"
-    MIN="${TIME##*:}"
-    _banner "Installing Monday morning timer — ${HOUR}:${MIN} server time"
-    _ssh bash <<EOF
+    _banner "Installing 3 timers: weekly (Tue 07:00) · fortnightly (every other Tue 07:00) · monthly (last day 07:00)"
+    _ssh bash <<'ENDSSH'
 set -e
 mkdir -p ~/.config/systemd/user
+REMOTE_DIR="$HOME/data/Applications/services/smart_ai_summary_email_client_2"
 
-cat > ~/.config/systemd/user/smart-email.service <<'SVC'
+# ── weekly ──────────────────────────────────────────────────────────────────
+cat > ~/.config/systemd/user/smart-email-weekly.service <<SVC
 [Unit]
-Description=Smart AI Summary Email — weekly supplier run
+Description=Smart AI Summary Email — weekly suppliers
 
 [Service]
 Type=oneshot
 WorkingDirectory=$REMOTE_DIR
-ExecStart=/usr/bin/docker compose run --rm $SERVICE
+ExecStart=/usr/bin/docker compose run --rm smart-email uv run python -m src.runners.full_run --run-for weekly
 StandardOutput=journal
 StandardError=journal
 SVC
 
-cat > ~/.config/systemd/user/smart-email.timer <<'TMR'
+cat > ~/.config/systemd/user/smart-email-weekly.timer <<TMR
 [Unit]
-Description=Smart AI Summary Email — every Monday morning
+Description=Smart Email — weekly (every Tuesday 07:00)
 
 [Timer]
-OnCalendar=Mon *-*-* ${HOUR}:${MIN}:00
+OnCalendar=Tue *-*-* 07:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+TMR
+
+# ── fortnightly ─────────────────────────────────────────────────────────────
+cat > ~/.config/systemd/user/smart-email-fortnightly.service <<SVC
+[Unit]
+Description=Smart AI Summary Email — fortnightly suppliers
+
+[Service]
+Type=oneshot
+WorkingDirectory=$REMOTE_DIR
+ExecStart=/usr/bin/docker compose run --rm smart-email uv run python -m src.runners.full_run --run-for fortnightly
+StandardOutput=journal
+StandardError=journal
+SVC
+
+cat > ~/.config/systemd/user/smart-email-fortnightly.timer <<TMR
+[Unit]
+Description=Smart Email — fortnightly (every Tuesday, script skips even ISO weeks)
+
+[Timer]
+OnCalendar=Tue *-*-* 07:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+TMR
+
+# ── monthly ─────────────────────────────────────────────────────────────────
+cat > ~/.config/systemd/user/smart-email-monthly.service <<SVC
+[Unit]
+Description=Smart AI Summary Email — monthly suppliers
+
+[Service]
+Type=oneshot
+WorkingDirectory=$REMOTE_DIR
+ExecStart=/usr/bin/docker compose run --rm smart-email uv run python -m src.runners.full_run --run-for monthly
+StandardOutput=journal
+StandardError=journal
+SVC
+
+cat > ~/.config/systemd/user/smart-email-monthly.timer <<TMR
+[Unit]
+Description=Smart Email — monthly (last day of month 07:00)
+
+[Timer]
+OnCalendar=*-*~1 07:00:00
 Persistent=true
 
 [Install]
@@ -111,24 +177,44 @@ WantedBy=timers.target
 TMR
 
 systemctl --user daemon-reload
-systemctl --user enable --now smart-email.timer
-systemctl --user status smart-email.timer
-echo "✓ Timer installed — next run:"
-systemctl --user list-timers smart-email.timer --no-pager
-EOF
+systemctl --user enable --now smart-email-weekly.timer smart-email-fortnightly.timer smart-email-monthly.timer
+echo ""
+echo "✓ All timers installed. Next runs:"
+systemctl --user list-timers 'smart-email-*.timer' --no-pager
+ENDSSH
     ;;
 
   # ── change-time ────────────────────────────────────────────────────────────
+  # Usage: ./deploy.sh change-time weekly 08:00
   change-time)
-    TIME="${2:?Usage: ./deploy.sh change-time HH:MM}"
-    _banner "Updating schedule to $TIME"
-    "$0" schedule "$TIME"
+    FREQ="${2:?Usage: ./deploy.sh change-time weekly|fortnightly|monthly HH:MM}"
+    TIME="${3:?Usage: ./deploy.sh change-time weekly|fortnightly|monthly HH:MM}"
+    HOUR="${TIME%%:*}"
+    MIN="${TIME##*:}"
+    _banner "Updating ${FREQ} timer to ${HOUR}:${MIN}"
+    case "$FREQ" in
+      weekly|fortnightly)
+        CALENDAR="Tue *-*-* ${HOUR}:${MIN}:00"
+        ;;
+      monthly)
+        CALENDAR="*-*~1 ${HOUR}:${MIN}:00"
+        ;;
+      *)
+        echo "Unknown frequency: $FREQ (use weekly, fortnightly, or monthly)"; exit 1 ;;
+    esac
+    _ssh bash <<EOF
+sed -i "s|^OnCalendar=.*|OnCalendar=${CALENDAR}|" ~/.config/systemd/user/smart-email-${FREQ}.timer
+systemctl --user daemon-reload
+systemctl --user restart smart-email-${FREQ}.timer
+echo "✓ ${FREQ} timer updated to ${HOUR}:${MIN}"
+systemctl --user list-timers smart-email-${FREQ}.timer --no-pager
+EOF
     ;;
 
   # ── next-run ───────────────────────────────────────────────────────────────
   next-run)
-    _banner "Next scheduled run"
-    _ssh "systemctl --user list-timers smart-email.timer --no-pager 2>/dev/null || echo 'Timer not installed'"
+    _banner "Next scheduled runs"
+    _ssh "systemctl --user list-timers 'smart-email-*.timer' --no-pager 2>/dev/null || echo 'No timers installed — run: ./deploy.sh schedule'"
     ;;
 
   # ── help ───────────────────────────────────────────────────────────────────
@@ -136,23 +222,29 @@ EOF
     echo ""
     echo "Usage: ./deploy.sh <command> [args]"
     echo ""
-    echo "  sync            Rsync code to server (skips .env)"
-    echo "  rebuild         Rebuild Docker image on server"
-    echo "  update          sync + rebuild in one step"
-    echo "  run             Trigger a full run now (sends emails)"
-    echo "  run-dry         Trigger a dry run now (no emails)"
-    echo "  status          Show container + timer status"
-    echo "  logs            Show last 100 log lines"
-    echo "  schedule [HH:MM]  Install Monday morning systemd timer (default 07:00)"
-    echo "  change-time HH:MM  Update the scheduled time"
-    echo "  next-run        Show when the next run is scheduled"
+    echo "  sync                         Rsync code to server (skips .env)"
+    echo "  rebuild                      Rebuild Docker image on server"
+    echo "  update                       sync + rebuild in one step"
+    echo "  run [weekly|fortnightly|monthly]  Trigger run now (default: all)"
+    echo "  run-dry [freq]               Dry run now (no emails sent)"
+    echo "  status                       Container + all timer status"
+    echo "  logs [weekly|fortnightly|monthly]  Show logs (default: all)"
+    echo "  schedule                     Install all 3 timers:"
+    echo "                                 weekly     → every Tuesday 07:00"
+    echo "                                 fortnightly → every other Tuesday 07:00"
+    echo "                                 monthly    → last day of month 07:00"
+    echo "  change-time FREQ HH:MM       Update timer for one frequency"
+    echo "  next-run                     Show next fire time for all 3 timers"
+    echo ""
+    echo "  Note: fortnightly runs every Tuesday but skips even ISO weeks."
+    echo "  Set FORTNIGHTLY_PARITY=even in .env to flip to even weeks."
     echo ""
     echo "First deploy:"
     echo "  1. ./deploy.sh sync"
     echo "  2. scp .env $SERVER:$REMOTE_DIR/.env"
     echo "  3. ./deploy.sh rebuild"
-    echo "  4. ./deploy.sh run-dry    # verify it works"
-    echo "  5. ./deploy.sh schedule   # install Monday 07:00 timer"
+    echo "  4. ./deploy.sh run-dry       # verify it works"
+    echo "  5. ./deploy.sh schedule      # install all 3 timers"
     echo ""
     ;;
 esac
