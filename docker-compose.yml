@@ -2,6 +2,7 @@ services:
   smart-email:
     build: .
     env_file: .env
+    user: "${UID}:${GID}"
     volumes:
       - ./data:/app/data
     restart: "no"
