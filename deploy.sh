@@ -5,6 +5,8 @@
 
 set -euo pipefail
 
+SERVER="user@209.38.82.33"
+REMOTE_DIR="~/data/Applications/services/smart_ai_summary_email_client_2"
 SERVICE_DIR="$HOME/data/Applications/services/smart_ai_summary_email_client_2"
 COMPOSE="docker compose"
 
@@ -28,6 +30,24 @@ if [[ ! -f "docker-compose.yml" ]]; then
     log_error "  cd $SERVICE_DIR && ./deploy.sh"
     exit 1
 fi
+
+sync_to_server() {
+    banner "Syncing code to server (run from local machine)"
+    LOCAL_DIR="$(cd "$(dirname "$0")" && pwd)"
+    rsync -avz --progress \
+        --exclude='.env' \
+        --exclude='.venv' \
+        --exclude='__pycache__' \
+        --exclude='*.pyc' \
+        --exclude='.git' \
+        --exclude='graphify-out' \
+        --exclude='logs' \
+        --exclude='data' \
+        "$LOCAL_DIR/" "$SERVER:$REMOTE_DIR/"
+    log_success "Sync complete"
+    log_warning ".env is NOT synced — copy manually on first deploy:"
+    log_info    "  scp .env $SERVER:$REMOTE_DIR/.env"
+}
 
 check_dependencies() {
     banner "Checking dependencies"
@@ -218,6 +238,7 @@ change_time() {
 
 # ── dispatch ───────────────────────────────────────────────────────────────
 case "${1:-help}" in
+    sync)          sync_to_server ;;
     build)         build_image ;;
     run)           run_now "${2:-all}" ;;
     run-dry)       run_dry "${2:-all}" ;;
@@ -234,8 +255,9 @@ case "${1:-help}" in
         echo ""
         echo "Usage: ./deploy.sh <command> [args]"
         echo ""
-        echo "  build                        Rebuild Docker image"
-        echo "  update                       git pull + rebuild"
+        echo "  sync                         Rsync code to server (run from local machine)"
+        echo "  build                        Rebuild Docker image (run on server)"
+        echo "  update                       git pull + rebuild (run on server)"
         echo "  run [weekly|fortnightly|monthly]  Trigger run now (default: all)"
         echo "  run-dry [freq]               Dry run (no emails sent)"
         echo "  check                        Show what would run today (no Gemini)"
@@ -251,11 +273,11 @@ case "${1:-help}" in
         echo "  Note: fortnightly skips even ISO weeks (set FORTNIGHTLY_PARITY=even to flip)"
         echo ""
         echo "First deploy:"
-        echo "  1. git clone / git pull"
-        echo "  2. cp .env.example .env  (or scp from local)"
-        echo "  3. ./deploy.sh build"
-        echo "  4. ./deploy.sh run-dry   # verify"
-        echo "  5. ./deploy.sh schedule  # install timers"
+        echo "  LOCAL:  ./deploy.sh sync"
+        echo "  LOCAL:  scp .env $SERVER:$REMOTE_DIR/.env"
+        echo "  SERVER: ./deploy.sh build"
+        echo "  SERVER: ./deploy.sh run-dry   # verify"
+        echo "  SERVER: ./deploy.sh schedule  # install timers"
         echo ""
         ;;
 esac
