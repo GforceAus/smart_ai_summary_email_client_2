@@ -27,6 +27,8 @@ import time
 from collections import defaultdict
 
 import duckdb
+from google import genai
+from google.genai import types
 import requests
 from dotenv import load_dotenv
 
@@ -42,8 +44,11 @@ logging.basicConfig(
 
 # ── Config ─────────────────────────────────────────────────────────────────
 
-OLLAMA_URL        = os.environ.get("OLLAMA_URL",   "http://localhost:11434")
-OLLAMA_MODEL      = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b-instruct-q4_K_M")
+LLM_PROVIDER      = os.environ.get("LLM_PROVIDER",    "ollama")   # "ollama" | "gemini"
+OLLAMA_URL        = os.environ.get("OLLAMA_URL",      "http://localhost:11434")
+OLLAMA_MODEL      = os.environ.get("OLLAMA_MODEL",    "qwen2.5:7b-instruct-q4_K_M")
+GEMINI_MODEL      = os.environ.get("GEMINI_MODEL",    "gemini-2.0-flash")
+GOOGLE_API_KEY    = os.environ.get("GOOGLE_API_KEY",  "")
 EMAIL_EXAMPLES_DB = "data/processed/training_approved_emails.duckdb"
 
 OLLAMA_TIMEOUT       = 240   # seconds — CPU inference on 7B is slow
@@ -247,7 +252,7 @@ def build_prompt(
 
 # ── Ollama Call ────────────────────────────────────────────────────────────
 
-def call_ollama(system_prompt: str, user_prompt: str) -> str:
+def _call_ollama(system_prompt: str, user_prompt: str) -> str:
     payload = {
         "model":  OLLAMA_MODEL,
         "stream": False,
@@ -256,22 +261,59 @@ def call_ollama(system_prompt: str, user_prompt: str) -> str:
             {"role": "user",   "content": user_prompt},
         ],
         "options": {
-            "temperature": 0.3,
-            "num_ctx":     4096,   # DO NOT increase — higher = more RAM + slower prefill on CPU
+            "temperature":    0.3,
+            "num_ctx":        4096,  # DO NOT increase — higher = more RAM + slower prefill on CPU
+            "num_predict":    2048,  # cap output tokens — emails never exceed ~700 tokens
+            "repeat_penalty": 1.3,   # penalise repeated phrases/tokens
         }
     }
-
     url = f"{OLLAMA_URL}/api/chat"
     logger.info(f"Calling Ollama — model: {OLLAMA_MODEL}, timeout: {OLLAMA_TIMEOUT}s")
     t0 = time.time()
-
     resp = requests.post(url, json=payload, timeout=OLLAMA_TIMEOUT)
     resp.raise_for_status()
-
-    elapsed = time.time() - t0
-    logger.info(f"Ollama responded in {elapsed:.1f}s")
-
+    logger.info(f"Ollama responded in {time.time() - t0:.1f}s")
     return resp.json()["message"]["content"]
+
+
+# Cumulative token usage across all Gemini calls in this process
+_token_usage: dict[str, int] = {"input": 0, "output": 0}
+
+
+def get_token_usage() -> dict[str, int]:
+    return dict(_token_usage)
+
+
+def _call_gemini(system_prompt: str, user_prompt: str) -> str:
+    client = genai.Client(api_key=GOOGLE_API_KEY)
+    logger.info(f"Calling Gemini — model: {GEMINI_MODEL}")
+    t0 = time.time()
+    response = client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=user_prompt,
+        config=types.GenerateContentConfig(
+            system_instruction=system_prompt,
+            temperature=0.3,
+        ),
+    )
+    elapsed = time.time() - t0
+    usage = response.usage_metadata
+    if usage:
+        _token_usage["input"]  += usage.prompt_token_count or 0
+        _token_usage["output"] += usage.candidates_token_count or 0
+        logger.info(
+            f"Gemini responded in {elapsed:.1f}s — "
+            f"tokens: {usage.prompt_token_count} in / {usage.candidates_token_count} out"
+        )
+    else:
+        logger.info(f"Gemini responded in {elapsed:.1f}s")
+    return response.text
+
+
+def call_llm(system_prompt: str, user_prompt: str) -> str:
+    if LLM_PROVIDER == "gemini":
+        return _call_gemini(system_prompt, user_prompt)
+    return _call_ollama(system_prompt, user_prompt)
 
 
 # ── Output Validation ──────────────────────────────────────────────────────
@@ -339,9 +381,9 @@ def generate_email(
         print(user_prompt)
         return None
 
-    # 4. Call Ollama
+    # 4. Call LLM
     try:
-        output = call_ollama(SYSTEM_PROMPT, user_prompt)
+        output = call_llm(SYSTEM_PROMPT, user_prompt)
     except requests.exceptions.Timeout:
         logger.error(
             f"Ollama timed out after {OLLAMA_TIMEOUT}s. "

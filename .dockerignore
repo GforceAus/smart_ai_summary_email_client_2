@@ -1,0 +1,16 @@
+.env
+.venv
+__pycache__
+*.pyc
+*.pyo
+.git
+graphify-out
+delme
+logs
+tests
+*.md
+justfile
+ollama_diagnostic.py
+token_details_per_supplier.md
+tasks.json
+KNOWLEDGE_BANK.md

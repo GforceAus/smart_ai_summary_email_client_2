@@ -1,0 +1,8 @@
+services:
+  smart-email:
+    build: .
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    restart: "no"
+    command: uv run python -m src.runners.full_run

@@ -45,6 +45,67 @@ def get_tasks(supplier: str, frequency: str) -> list:
         sys.exit(1)
 
 
+def get_all_tasks_for_report(supplier: str, frequency: str) -> list[dict]:
+    """
+    Fetch ALL tasks for a supplier within the frequency window — no 60-row cap.
+    Queries field_ops.tasks directly and joins task_questions for answers.
+    Used for the full CSV attachment sent with each email.
+    """
+    interval_map = {
+        "weekly":      "7 days",
+        "fortnightly": "14 days",
+        "monthly":     "1 month",
+    }
+    if frequency not in interval_map:
+        return []
+
+    interval = interval_map[frequency]
+
+    try:
+        with PostgreSQLConnection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT (CURRENT_DATE)::text, (CURRENT_DATE - INTERVAL '{interval}')::text"
+                )
+                date_to, date_from = cur.fetchone()
+
+                cur.execute("""
+                    SELECT
+                        t.task_id,
+                        t.task_date,
+                        t.task_name,
+                        t.task_status,
+                        t.store_name,
+                        s.state,
+                        COALESCE(
+                            NULLIF(TRIM(t.cover_rep_first_name || ' ' || t.cover_rep_last_name), ''),
+                            NULLIF(TRIM(t.senior_rep_first_name || ' ' || t.senior_rep_last_name), '')
+                        ) AS rep_name,
+                        t.comments_from_rep,
+                        t.cannot_complete_comments,
+                        tq.question,
+                        tq.answer_from_rep
+                    FROM field_ops.tasks t
+                    LEFT JOIN field_ops.stores s ON s.store_id = t.store_id
+                    LEFT JOIN field_ops.task_questions tq
+                           ON tq.task_uuid = t.id
+                          AND tq.answer_from_rep IS NOT NULL
+                          AND tq.answer_from_rep <> ''
+                    WHERE t.supplier_name = %s
+                      AND t.task_date >= %s::date
+                      AND t.task_date <= %s::date
+                      AND t.task_status IN ('done', 'in_progress')
+                    ORDER BY t.task_name, t.store_name, tq.question
+                """, (supplier, date_from, date_to))
+
+                cols = [d[0] for d in cur.description]
+                return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+    except Exception as e:
+        print(f"Error fetching full task report: {e}")
+        return []
+
+
 def main():
     parser = argparse.ArgumentParser(description="Fetch detailed supplier tasks")
     parser.add_argument("--supplier",  required=True, help="Supplier name (e.g. OSRAM)")

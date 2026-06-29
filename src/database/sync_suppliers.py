@@ -54,6 +54,39 @@ def sync_suppliers():
         duck_conn.execute(f"CREATE TABLE suppliers ({supplier_types})")
         duck_conn.executemany(f"INSERT INTO suppliers VALUES ({','.join(['?'] * len(suppliers_cols))})", suppliers_data)
 
+        # Auto-register new suppliers into reporting_frequency (inactive by default)
+        print("Checking for new suppliers to register...")
+        duck_conn.execute("""
+            CREATE TABLE IF NOT EXISTS reporting_frequency (
+                id         INTEGER PRIMARY KEY,
+                client_id  VARCHAR,
+                supplier_name VARCHAR NOT NULL,
+                frequency  VARCHAR NOT NULL DEFAULT 'monthly',
+                active     BOOLEAN DEFAULT false,
+                notes      VARCHAR,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        new_suppliers = duck_conn.execute("""
+            SELECT s.short_name
+            FROM suppliers s
+            LEFT JOIN reporting_frequency rf ON rf.supplier_name = s.short_name
+            WHERE rf.supplier_name IS NULL
+              AND s.status = 'active'
+              AND s.short_name IS NOT NULL
+        """).fetchall()
+
+        for (name,) in new_suppliers:
+            duck_conn.execute("""
+                INSERT INTO reporting_frequency (supplier_name, frequency, active, notes)
+                VALUES (?, 'monthly', false, 'auto-registered — activate when ready')
+            """, [name])
+            print(f"  + Registered new supplier: {name} (inactive, monthly)")
+
+        if not new_suppliers:
+            print("  No new suppliers found.")
+
         print("Sync complete.")
     finally:
         duck_conn.close()
