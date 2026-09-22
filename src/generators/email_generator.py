@@ -104,6 +104,18 @@ SEVERITY (highest priority rule):
 - The Summary must open with the most severe item and its follow-up — not the
   finding with the largest store count.
 
+LISTING FORMAT:
+- Put a finding's affected stores INLINE in that bullet, comma-separated
+  ("9 stores reported missing clips: A, B, C"). Never give each store its own
+  bullet — subsequent findings then read as further members of that list.
+- Every bullet must stand alone as a complete finding. Do not nest one
+  finding's bullet underneath another finding's store list.
+
+FIELD MEANINGS:
+- total_tasks is ALL tasks. recurring_tasks and one_off_tasks are separate
+  counts that break it down. Never describe total_tasks as recurring — quote
+  recurring_tasks if you mean recurring.
+
 COUNTING (strict):
 - Every store_count is already a DISTINCT store count. Never add store counts
   together: the same store can answer more than one way on the same question,
