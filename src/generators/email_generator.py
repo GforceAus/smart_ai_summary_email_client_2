@@ -89,6 +89,21 @@ SECTIONING:
 - Name every affected store in its section. Do not write "several stores".
 - Report a question with no issues as a positive confirmation rather than
   omitting it.
+SEVERITY (highest priority rule):
+- Rows carry a severity of "critical" or "high" where present. Anything
+  involving injury, a near miss, or a safety hazard outranks every volume-based
+  finding, however many stores the latter affects.
+- Keep sections named after the THEME (e.g. "Rack Maintenance", "Safety",
+  "Stock Handling"). Never name a section after a severity level — do not
+  produce "Critical Issues" or "High Severity Issues" buckets. Severity
+  controls the ORDER of the themed sections, not their names.
+- Order those themed sections so the one carrying the critical item comes
+  first, then those carrying high severity, then the rest.
+- A critical item leads its section: name the store, state what happened
+  plainly, and give the follow-up required to close it out.
+- The Summary must open with the most severe item and its follow-up — not the
+  finding with the largest store count.
+
 COUNTING (strict):
 - Every store_count is already a DISTINCT store count. Never add store counts
   together: the same store can answer more than one way on the same question,
@@ -97,6 +112,12 @@ COUNTING (strict):
   the Question Rollups block, or count the unique names in distinct_stores.
 - Any number you state must be either copied from the payload or equal to the
   count of store names you list in that same sentence.
+- To combine answers, take the union of their store lists and count the names —
+  never add the counts. all_stores_answering counts every store that answered
+  the question including clean results, so it is never the figure for a problem.
+- In the Summary, do not state any combined store figure at all. Quote a single
+  group's count verbatim, or describe the theme without a number. A combined
+  count with no store list cannot be checked and has been wrong before.
 
 - still_in_progress_stores lists stores where the task is not yet closed —
   typically rolled over to the next visit. Describe these as outstanding or
@@ -149,6 +170,41 @@ def strip_html(raw: str) -> str:
     return text.strip()
 
 
+# Field-ops severity vocabulary. Deliberately generic: any client's safety
+# question and any rep describing an injury uses this language, so nothing here
+# is specific to one supplier's task set.
+SEVERITY_PATTERNS: list[tuple[str, str]] = [
+    ("critical", r"injur|struck|narrowly missed|missed (?:my|their|his|her) head"
+                 r"|fell on|falling|collaps|electrocut|trapped|crush"),
+    ("high",     r"\bsafety\b|hazard|unsafe|rack damag|bsafe|\brisk\b"),
+]
+SEVERITY_RANK = {"critical": 2, "high": 1}
+
+# Answers that mean "nothing found". Note this is an exact-match list on
+# purpose: 'NO  MUST COMMENT' on the brochures task IS a finding, so a plain
+# startswith('NO') test would wrongly discard it.
+NON_ISSUE_ANSWERS = {"NO", "NONE", "NONE REQUIRED", "NO NONE FOUND", ""}
+
+
+def is_non_issue(answer: str) -> bool:
+    return " ".join((answer or "").upper().split()) in NON_ISSUE_ANSWERS
+
+
+def classify_severity(*texts: str) -> str | None:
+    """
+    Return the highest severity matched across the given texts.
+
+    Applied to the question, the task description and the rep's own comment,
+    because a near-miss is often recorded as free text on a question whose
+    dropdown answer is 'NO'.
+    """
+    blob = " ".join(t for t in texts if t).lower()
+    for name, pattern in SEVERITY_PATTERNS:
+        if re.search(pattern, blob):
+            return name
+    return None
+
+
 def aggregate_tasks(tasks: list[dict], descriptions: dict | None = None) -> list[dict]:
     """
     Collapse repetitive rows into grouped records keyed by
@@ -195,11 +251,25 @@ def aggregate_tasks(tasks: list[dict], descriptions: dict | None = None) -> list
         # Comments/cannot-complete belong to the task, not one question — attach
         # them to the task's first question group so they are not duplicated
         # once per question.
-        first_q = next(((qa.get("q") or "").strip() for qa in qa_list
-                        if (qa.get("q") or "").strip()), None)
-        if first_q is not None:
-            first_a = next(((qa.get("a") or "").strip() for qa in qa_list
-                            if (qa.get("q") or "").strip()), "")
+        # Attach the comment to a question this task actually flagged, rather
+        # than blindly the first one. Without this a rep's near-miss report
+        # lands under a question whose answer was 'NO' — i.e. filed as a
+        # non-issue.
+        answered = [((qa.get("q") or "").strip(), (qa.get("a") or "").strip())
+                    for qa in qa_list if (qa.get("q") or "").strip()]
+        target = None
+        comment_text = (t.get("comment") or "") + " " + (t.get("cannot_complete") or "")
+        comment_sev = classify_severity(comment_text)
+        if comment_sev:
+            # Prefer a question matching the comment's severity theme.
+            target = next((qa for qa in answered
+                           if classify_severity(qa[0]) == comment_sev), None)
+        if target is None:
+            target = next((qa for qa in answered if not is_non_issue(qa[1])), None)
+        if target is None and answered:
+            target = answered[0]
+        if target is not None:
+            first_q, first_a = target
             g = groups[(task_name, first_q, first_a)]
             comment = t.get("comment")
             if comment and comment.strip():
@@ -222,6 +292,15 @@ def aggregate_tasks(tasks: list[dict], descriptions: dict | None = None) -> list
         }
         # Description is emitted once in the Task Definitions legend, not
         # repeated on every row.
+        # A rep's comment can raise severity even on a 'NO' row (a near miss
+        # is often written up against a question whose dropdown says NO), but
+        # the question text alone must not: 50 stores answering NO to a safety
+        # question is a clean result, not a safety incident.
+        severity = classify_severity(" ".join(g["comments"]))
+        if severity is None and not is_non_issue(a):
+            severity = classify_severity(q, descriptions.get(task_name, ""))
+        if severity:
+            row["severity"] = severity
         outstanding = sorted(set(g["outstanding"]))
         if outstanding:
             row["still_in_progress_stores"] = outstanding
@@ -232,7 +311,16 @@ def aggregate_tasks(tasks: list[dict], descriptions: dict | None = None) -> list
             row["cannot_complete"] = g["cannot_complete"]
         result.append(row)
 
-    result.sort(key=lambda x: (x["score"], x["store_count"]), reverse=True)
+    def rank(row: dict) -> tuple:
+        # A group whose answer means "nothing found" keeps its severity label
+        # (the comment is still worth showing) but must not outrank real
+        # findings — otherwise 48 stores reporting NO sorts above an actual
+        # hazard because one attached comment mentions safety.
+        sev = 0 if is_non_issue(row["answer"]) else \
+            SEVERITY_RANK.get(row.get("severity"), 0)
+        return (sev, row["score"], row["store_count"])
+
+    result.sort(key=rank, reverse=True)
     return result[:MAX_AGGREGATED_ROWS]
 
 
@@ -263,7 +351,12 @@ def build_question_rollups(aggregated: list[dict]) -> dict:
     rollups = {}
     for q, entry in by_q.items():
         union = sorted(entry.pop("_union"))
-        entry["distinct_stores_total"] = len(union)
+        # Every store that answered this question, whatever the answer.
+        # Answer polarity is question-dependent ('YES photos attached' is a
+        # good result for brochures, 'YES MISSING CLIPS' is a bad one for rack
+        # maintenance), so an "issues only" union cannot be derived here — the
+        # per-answer store lists are the reliable basis for any combination.
+        entry["all_stores_answering"] = len(union)
         entry["distinct_stores"] = union
         rollups[q] = entry
     return rollups
@@ -518,30 +611,52 @@ REQUIRED_SECTIONS = ["## Overview", "## Issues & Flags", "## Summary"]
 
 def check_store_counts(text: str) -> list[str]:
     """
-    Flag any "N stores (A, B, C)" claim where N does not equal the number of
-    stores actually listed.
+    Flag any "N stores" claim where N does not match the store names listed
+    alongside it.
 
     The model reliably miscounts unions of overlapping store sets (reporting
     8 + 4 as 12 when two stores appear in both). The rollups in the payload
-    prevent most of it; this catches whatever leaks through, so a wrong number
-    cannot reach a client silently.
+    prevent most of it; this catches what leaks through.
+
+    The list may appear either after the count ("8 stores: A, B, C") or before
+    it ("**A, B, C**: 8 stores reported ..."), so both sides are considered and
+    the nearest list wins. Claims with no list alongside them — a bare "12
+    stores" in the Summary — cannot be checked this way.
     """
+    NAME = r"[A-Z][A-Z0-9 '&./\-]{2,}"
+
+    def names_in(segment: str) -> list[str]:
+        out = []
+        for part in segment.split(","):
+            # Strip list bullets and bold markers from both ends, e.g.
+            # "*   **ALICE SPRINGS" -> "ALICE SPRINGS".
+            p = re.sub(r"^[\s\*\-•]+", "", part)
+            p = re.sub(r"[\s\*]+$", "", p)
+            if re.fullmatch(NAME, p):
+                out.append(p)
+        return out
+
     problems = []
     for i, line in enumerate(text.splitlines(), 1):
         for m in re.finditer(r"(\d+)\s*\**\s*stores?\b", line, re.I):
             claimed = int(m.group(1))
-            tail = line[m.end():]
-            paren = re.search(r"\(([^)]+)\)", tail)
-            colon = re.search(r":\s*([^.]+)", tail)
+            before, after = line[:m.start()], line[m.end():]
+
+            # A list immediately preceding the count, e.g. "**A, B, C**: 8 stores"
+            lead = re.search(r"([^:]+):\s*\**\s*$", before)
+            lead_names = names_in(lead.group(1)) if lead else []
+
+            # Otherwise the first parenthesised or colon-introduced list after.
+            paren = re.search(r"\(([^)]+)\)", after)
+            colon = re.search(r":\s*([^.]+)", after)
             if paren and (not colon or paren.start() < colon.start()):
-                seg = paren.group(1)
+                trail_names = names_in(paren.group(1))
             elif colon:
-                seg = colon.group(1)
+                trail_names = names_in(colon.group(1))
             else:
-                continue
-            names = [p.strip().strip("*").strip() for p in seg.split(",")]
-            names = [p for p in names
-                     if re.fullmatch(r"[A-Z][A-Z0-9 '&./\-]{2,}", p)]
+                trail_names = []
+
+            names = lead_names if len(lead_names) >= 2 else trail_names
             if len(names) >= 2 and claimed != len(names):
                 problems.append(
                     f"line {i}: claims {claimed} stores but lists {len(names)}"
