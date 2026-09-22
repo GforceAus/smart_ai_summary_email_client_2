@@ -19,7 +19,9 @@ Usage:
 """
 
 import argparse
+import html
 import json
+import re
 import logging
 import os
 import sys
@@ -53,9 +55,18 @@ EMAIL_EXAMPLES_DB = "data/processed/training_approved_emails.duckdb"
 
 OLLAMA_TIMEOUT       = 240   # seconds — CPU inference on 7B is slow
 MAX_EXAMPLES         = 2     # few-shot cap
-MAX_AGGREGATED_ROWS  = 15    # hard cap on grouped exception rows sent to LLM
-TOKEN_WARN_LIMIT     = 2_800
-TOKEN_HARD_LIMIT     = 4_000
+
+# Budgets are provider-dependent. Ollama runs a 7B on CPU, so it stays tight.
+# Gemini 2.5 Flash has a ~1M-token input window — the old 4k cap was throttling
+# it to ~0.4% of capacity and was the reason whole task groups were dropped.
+_IS_GEMINI = LLM_PROVIDER == "gemini"
+
+MAX_AGGREGATED_ROWS  = 400   if _IS_GEMINI else 15
+TOKEN_WARN_LIMIT     = 200_000 if _IS_GEMINI else 2_800
+TOKEN_HARD_LIMIT     = 800_000 if _IS_GEMINI else 4_000
+MAX_OUTPUT_TOKENS    = 8_192   # Sandro-length emails need real output headroom
+EXAMPLE_CHAR_LIMIT   = 8_000 if _IS_GEMINI else 1_800
+MAX_DESC_CHARS       = 1_200   # per task_description, after HTML stripping
 
 # ── System Prompt ──────────────────────────────────────────────────────────
 
@@ -70,7 +81,28 @@ RULES:
 - Flag issues clearly but without alarm — these are routine operational summaries
 - When many stores share the same issue, summarise as a group (e.g. "25 stores reported stock not ranged")
 
-OUTPUT FORMAT (use these exact section headers):
+SECTIONING:
+- The Task Definitions block tells you what each task covers. Derive the
+  report's issue sections from those definitions and the questions asked —
+  e.g. a task whose description lists SAFETY / RACK MAINTENANCE /
+  DEFECTIVE-DAMAGED STOCK should produce a section per theme, not one flat list.
+- Name every affected store in its section. Do not write "several stores".
+- Report a question with no issues as a positive confirmation rather than
+  omitting it.
+COUNTING (strict):
+- Every store_count is already a DISTINCT store count. Never add store counts
+  together: the same store can answer more than one way on the same question,
+  so sums double-count. 8 + 4 is not 12 if two stores appear in both.
+- For any figure spanning more than one answer, use distinct_stores_total from
+  the Question Rollups block, or count the unique names in distinct_stores.
+- Any number you state must be either copied from the payload or equal to the
+  count of store names you list in that same sentence.
+
+- still_in_progress_stores lists stores where the task is not yet closed —
+  typically rolled over to the next visit. Describe these as outstanding or
+  awaiting follow-up, not as completed.
+
+OUTPUT FORMAT:
 ## Overview
 2-3 sentences covering visit volume, completion rate, and general network health.
 
@@ -78,8 +110,10 @@ OUTPUT FORMAT (use these exact section headers):
 Paragraph summarising what was done across stores. Include states if notable patterns exist.
 
 ## Issues & Flags
-Bullet list. Format: Store group or individual store — Task — finding.
-If no issues: write "No significant issues identified this period."
+One "### <Theme>" subsection per theme derived from the Task Definitions.
+Under each, bullet the affected stores by name with the finding.
+If a theme has no issues, state that in one line.
+If nothing at all: "No significant issues identified this period."
 
 ## Rep Comments
 Bullet list of notable rep observations with store context.
@@ -91,71 +125,218 @@ Omit this section entirely if no comments exist.
 
 # ── Task Aggregation ───────────────────────────────────────────────────────
 
-def aggregate_tasks(tasks: list[dict]) -> list[dict]:
+def normalise_task_name(name: str) -> str:
     """
-    Collapse repetitive task+answer rows into grouped records.
+    Strip the leading DD-MM-YY / D-M-YY prefix GFM prepends to task names.
 
-    Example: 25 rows of "GIMBLE DOWNLIGHTS / NO NOT RANGED" at different stores
-    becomes 1 row: {task, question, answer, store_count: 25, affected_stores: [...]}
-
-    This is the primary token reduction step for the LLM payload.
+    Without this the same recurring task forks into a new group every week
+    ('07-09-26 RECURRING TASK 1' vs '14-09-26 RECURRING TASK 1'), which
+    silently splits groups across any multi-week window.
     """
+    return re.sub(r"^\s*\d{1,2}-\d{1,2}-\d{2,4}\s*", "", (name or "")).strip()
+
+
+def strip_html(raw: str) -> str:
+    """Flatten the HTML task_description into plain text for the LLM."""
+    if not raw:
+        return ""
+    text = re.sub(r"<br\s*/?>|</p>|</li>", "\n", raw, flags=re.I)
+    text = re.sub(r"<li[^>]*>", "- ", text, flags=re.I)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = html.unescape(text)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n\s*\n+", "\n", text)
+    return text.strip()
+
+
+def aggregate_tasks(tasks: list[dict], descriptions: dict | None = None) -> list[dict]:
+    """
+    Collapse repetitive rows into grouped records keyed by
+    (normalised task name, question, answer).
+
+    Every QA pair on a task contributes to its own group. The previous version
+    keyed on (task_name, qa[0].answer) and therefore discarded every question
+    after the first — on PORTA-TIMBER's RECURRING TASK 1 that silently dropped
+    the SAFETY and DEFECTIVE-DAMAGED STOCK questions on every run.
+    """
+    descriptions = descriptions or {}
     groups = defaultdict(lambda: {
         "stores": [],
         "score": 0,
         "comments": [],
         "cannot_complete": [],
+        "outstanding": [],   # stores where the task is still in_progress
     })
 
     for t in tasks:
-        qa_list = t.get("qa") or []
-        # Use the first (highest-scored) QA pair as the group key
-        top_qa = qa_list[0] if qa_list else {}
-        key = (
-            t.get("task", ""),
-            top_qa.get("a", ""),
-        )
+        task_name = normalise_task_name(t.get("task", ""))
+        store     = t.get("store")
+        qa_list   = t.get("qa") or []
 
-        g = groups[key]
-        g["task"]     = t.get("task", "")
-        g["task_id"]  = t.get("task_id", "")
-        g["question"] = top_qa.get("q", "")
-        g["answer"]   = top_qa.get("a", "")
-        g["score"]    = max(g["score"], t.get("score", 0))
+        for qa in qa_list:
+            q = (qa.get("q") or "").strip()
+            a = (qa.get("a") or "").strip()
+            if not q:
+                continue
 
-        store = t.get("store")
-        if store:
-            g["stores"].append(store)
+            g = groups[(task_name, q, a)]
+            g["task"]     = task_name
+            g["question"] = q
+            g["answer"]   = a
+            g["score"]    = max(g["score"], t.get("score", 0))
+            if store:
+                g["stores"].append(store)
+                # in_progress is a meaningful state, not noise: rolled-over
+                # tasks (e.g. brochures not yet delivered) stay in_progress by
+                # design, so surface it rather than filtering these rows out.
+                if t.get("status") == "in_progress":
+                    g["outstanding"].append(store)
 
-        comment = t.get("comment")
-        if comment and comment.strip():
-            g["comments"].append(f"{store}: {comment.strip()}")
-
-        cc = t.get("cannot_complete")
-        if cc and cc.strip():
-            g["cannot_complete"].append(f"{store}: {cc.strip()}")
+        # Comments/cannot-complete belong to the task, not one question — attach
+        # them to the task's first question group so they are not duplicated
+        # once per question.
+        first_q = next(((qa.get("q") or "").strip() for qa in qa_list
+                        if (qa.get("q") or "").strip()), None)
+        if first_q is not None:
+            first_a = next(((qa.get("a") or "").strip() for qa in qa_list
+                            if (qa.get("q") or "").strip()), "")
+            g = groups[(task_name, first_q, first_a)]
+            comment = t.get("comment")
+            if comment and comment.strip():
+                g["comments"].append(f"{store}: {comment.strip()}")
+            cc = t.get("cannot_complete")
+            if cc and cc.strip():
+                g["cannot_complete"].append(f"{store}: {cc.strip()}")
 
     result = []
-    for g in groups.values():
+    for (task_name, q, a), g in groups.items():
         row = {
-            "task":            g["task"],
-            "question":        g["question"],
-            "answer":          g["answer"],
-            "store_count":     len(g["stores"]),
-            "affected_stores": g["stores"],
+            "task":            task_name,
+            "question":        q,
+            "answer":          a,
+            # Deduplicate: a store recurs across dates within the window, so
+            # len(stores) counts row occurrences, not distinct stores.
+            "store_count":     len(set(g["stores"])),
+            "affected_stores": sorted(set(g["stores"])),
             "score":           g["score"],
         }
-        # Only include comment fields if they have content
+        # Description is emitted once in the Task Definitions legend, not
+        # repeated on every row.
+        outstanding = sorted(set(g["outstanding"]))
+        if outstanding:
+            row["still_in_progress_stores"] = outstanding
+            row["still_in_progress_count"]  = len(outstanding)
         if g["comments"]:
             row["rep_comments"] = g["comments"]
         if g["cannot_complete"]:
             row["cannot_complete"] = g["cannot_complete"]
-
         result.append(row)
 
-    # Sort worst-first, cap at MAX_AGGREGATED_ROWS
-    result.sort(key=lambda x: x["score"], reverse=True)
+    result.sort(key=lambda x: (x["score"], x["store_count"]), reverse=True)
     return result[:MAX_AGGREGATED_ROWS]
+
+
+def build_question_rollups(aggregated: list[dict]) -> dict:
+    """
+    Precompute distinct-store unions per question.
+
+    The LLM cannot be trusted to union overlapping store sets: given
+    'NO MUST COMMENT' (8 stores) and 'OTHER MUST COMMENT' (4 stores) that
+    share 2 stores, it reports 12 rather than 10. Every cross-answer total is
+    computed here instead, so the model never has to add counts together.
+    """
+    by_q: dict = {}
+    for row in aggregated:
+        q = row["question"]
+        entry = by_q.setdefault(q, {
+            "task": row["task"],
+            "answers": {},
+            "_union": set(),
+        })
+        stores = row.get("affected_stores") or []
+        entry["answers"][row["answer"]] = {
+            "store_count": len(set(stores)),
+            "stores": sorted(set(stores)),
+        }
+        entry["_union"].update(stores)
+
+    rollups = {}
+    for q, entry in by_q.items():
+        union = sorted(entry.pop("_union"))
+        entry["distinct_stores_total"] = len(union)
+        entry["distinct_stores"] = union
+        rollups[q] = entry
+    return rollups
+
+
+def fetch_task_context(supplier: str, date_from: str, date_to: str) -> tuple[list[dict], dict]:
+    """
+    Fetch the full task set straight from field_ops, bypassing the
+    LIMIT 60 baked into v_supplier_email_summary, and return the
+    task_description for each task name.
+
+    The view caps its tasks payload at the 60 highest-scoring rows. For
+    PORTA-TIMBER that discarded ~200 of 262 tasks-with-issues before the
+    generator ever saw them. The view is left untouched — it still supplies
+    the summary metrics.
+
+    Returns (tasks, descriptions) where tasks matches the view's row shape.
+    """
+    from src.database.connection import PostgreSQLConnection
+
+    rows_by_task: dict = {}
+    descriptions: dict = {}
+
+    with PostgreSQLConnection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT t.task_id, t.id::text AS task_uuid, t.task_date, t.task_name,
+                       t.task_description, t.task_status, t.store_id, t.store_name,
+                       s.state,
+                       COALESCE(
+                           NULLIF(TRIM(t.cover_rep_first_name || ' ' || t.cover_rep_last_name), ''),
+                           NULLIF(TRIM(t.senior_rep_first_name || ' ' || t.senior_rep_last_name), '')
+                       ) AS rep_name,
+                       t.comments_from_rep, t.cannot_complete_comments,
+                       tq.question, tq.answer_from_rep
+                FROM field_ops.tasks t
+                LEFT JOIN field_ops.stores s ON s.store_id = t.store_id
+                LEFT JOIN field_ops.task_questions tq
+                       ON tq.task_uuid = t.id
+                      AND tq.answer_from_rep IS NOT NULL
+                      AND tq.answer_from_rep <> ''
+                WHERE t.supplier_name = %s
+                  AND t.task_date >= %s::date
+                  AND t.task_date <= %s::date
+                  AND t.task_status IN ('done', 'in_progress')
+                ORDER BY t.task_name, t.store_name
+            """, (supplier, date_from, date_to))
+
+            for r in cur.fetchall():
+                (task_id, task_uuid, task_date, task_name, task_desc, status,
+                 store_id, store, state, rep, comment, cannot, question, answer) = r
+
+                norm = normalise_task_name(task_name)
+                if task_desc and norm not in descriptions:
+                    descriptions[norm] = strip_html(task_desc)
+
+                key = (task_id, store_id)
+                row = rows_by_task.get(key)
+                if row is None:
+                    row = rows_by_task[key] = {
+                        "task_id": task_id, "task_uuid": task_uuid,
+                        "date": task_date, "task": task_name, "store": store,
+                        "store_id": store_id, "state": state, "rep": rep,
+                        "status": status, "comment": comment or "",
+                        "cannot_complete": cannot or "", "qa": [], "score": 0,
+                    }
+                if question:
+                    row["qa"].append({"q": question, "a": answer})
+                    # Negative answers carry the signal; score drives ordering.
+                    if (answer or "").strip().upper() not in ("NO", "N/A", ""):
+                        row["score"] += 1
+
+    return list(rows_by_task.values()), descriptions
 
 
 def strip_llm_metadata(summary: dict) -> dict:
@@ -170,7 +351,7 @@ def fetch_examples(supplier_name: str) -> list[str]:
     """
     Fetch up to MAX_EXAMPLES approved email bodies from DuckDB.
     Prefers supplier-specific; falls back to cross-supplier.
-    Trims each example to 1800 chars to control token budget.
+    Trims each example to EXAMPLE_CHAR_LIMIT chars to control token budget.
     """
     try:
         con = duckdb.connect(EMAIL_EXAMPLES_DB, read_only=True)
@@ -198,7 +379,7 @@ def fetch_examples(supplier_name: str) -> list[str]:
 
         con.close()
         # Trim to control token budget — 1800 chars ≈ 450 tokens each
-        return [r[0][:1800] for r in rows]
+        return [r[0][:EXAMPLE_CHAR_LIMIT] for r in rows]
 
     except Exception as e:
         logger.warning(f"Could not fetch few-shot examples: {e}")
@@ -213,6 +394,7 @@ def build_prompt(
     examples: list[str],
     supplier: str,
     frequency: str,
+    descriptions: dict | None = None,
 ) -> tuple[str, int]:
     """Build user message. Returns (prompt_text, token_estimate)."""
     parts = []
@@ -225,7 +407,7 @@ def build_prompt(
         parts.append("---")
 
     # Aggregate + strip metadata before serialising
-    aggregated = aggregate_tasks(tasks)
+    aggregated = aggregate_tasks(tasks, descriptions)
     clean_summary = strip_llm_metadata(summary)
 
     logger.info(
@@ -235,6 +417,18 @@ def build_prompt(
     parts.append(f"## Data Payload — {supplier} ({frequency})")
     parts.append("### Summary Metrics")
     parts.append(json.dumps(clean_summary, indent=2, default=str))
+    if descriptions:
+        parts.append("### Task Definitions")
+        parts.append(
+            "What each task actually asks the rep to do. Use these to decide "
+            "how to group and title the sections of the email."
+        )
+        parts.append(json.dumps(
+            {k: v[:MAX_DESC_CHARS] for k, v in descriptions.items()},
+            indent=2, default=str,
+        ))
+    parts.append("### Question Rollups (precomputed — use these for any total)")
+    parts.append(json.dumps(build_question_rollups(aggregated), indent=2, default=str))
     parts.append("### Aggregated Exception Rows (sorted worst-first)")
     parts.append(json.dumps(aggregated, indent=2, default=str))
     parts.append("---")
@@ -294,6 +488,7 @@ def _call_gemini(system_prompt: str, user_prompt: str) -> str:
         config=types.GenerateContentConfig(
             system_instruction=system_prompt,
             temperature=0.3,
+            max_output_tokens=MAX_OUTPUT_TOKENS,
         ),
     )
     elapsed = time.time() - t0
@@ -320,6 +515,41 @@ def call_llm(system_prompt: str, user_prompt: str) -> str:
 
 REQUIRED_SECTIONS = ["## Overview", "## Issues & Flags", "## Summary"]
 
+
+def check_store_counts(text: str) -> list[str]:
+    """
+    Flag any "N stores (A, B, C)" claim where N does not equal the number of
+    stores actually listed.
+
+    The model reliably miscounts unions of overlapping store sets (reporting
+    8 + 4 as 12 when two stores appear in both). The rollups in the payload
+    prevent most of it; this catches whatever leaks through, so a wrong number
+    cannot reach a client silently.
+    """
+    problems = []
+    for i, line in enumerate(text.splitlines(), 1):
+        for m in re.finditer(r"(\d+)\s*\**\s*stores?\b", line, re.I):
+            claimed = int(m.group(1))
+            tail = line[m.end():]
+            paren = re.search(r"\(([^)]+)\)", tail)
+            colon = re.search(r":\s*([^.]+)", tail)
+            if paren and (not colon or paren.start() < colon.start()):
+                seg = paren.group(1)
+            elif colon:
+                seg = colon.group(1)
+            else:
+                continue
+            names = [p.strip().strip("*").strip() for p in seg.split(",")]
+            names = [p for p in names
+                     if re.fullmatch(r"[A-Z][A-Z0-9 '&./\-]{2,}", p)]
+            if len(names) >= 2 and claimed != len(names):
+                problems.append(
+                    f"line {i}: claims {claimed} stores but lists {len(names)}"
+                    f" ({', '.join(names)})"
+                )
+    return problems
+
+
 def validate_output(text: str) -> list[str]:
     return [s for s in REQUIRED_SECTIONS if s not in text]
 
@@ -343,6 +573,22 @@ def generate_email(
     summary = result["summary"]
     tasks   = result["tasks"]
 
+    # The view caps its tasks payload at 60 rows. Re-fetch the full set plus
+    # task_description; fall back to the view's rows if that query fails.
+    descriptions: dict = {}
+    try:
+        full_tasks, descriptions = fetch_task_context(
+            supplier, str(summary.get("date_from")), str(summary.get("date_to"))
+        )
+        if full_tasks:
+            logger.info(
+                f"Full fetch: {len(tasks)} view rows (capped) -> "
+                f"{len(full_tasks)} rows, {len(descriptions)} task descriptions"
+            )
+            tasks = full_tasks
+    except Exception as e:
+        logger.warning(f"Full task fetch failed, using capped view rows: {e}")
+
     logger.info(
         f"View returned: {summary.get('total_tasks')} tasks, "
         f"{len(tasks)} raw exception rows, "
@@ -355,7 +601,7 @@ def generate_email(
 
     # 3. Build prompt (aggregation + strip happens inside)
     user_prompt, token_estimate = build_prompt(
-        summary, tasks, examples, supplier, frequency
+        summary, tasks, examples, supplier, frequency, descriptions
     )
 
     logger.info(f"Prompt token estimate: ~{token_estimate}")
@@ -402,6 +648,15 @@ def generate_email(
     missing = validate_output(output)
     if missing:
         logger.warning(f"Output missing sections: {missing}")
+
+    count_problems = check_store_counts(output)
+    for problem in count_problems:
+        logger.error(f"STORE COUNT MISMATCH — {problem}")
+    if count_problems:
+        logger.error(
+            f"{len(count_problems)} store-count mismatch(es) detected. "
+            f"Review before sending to a client."
+        )
 
     logger.info(f"Generated email: {len(output)} chars (~{len(output)//4} tokens)")
     return output
