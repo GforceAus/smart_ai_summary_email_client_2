@@ -9,6 +9,10 @@ help:
     @echo "── Runs ──────────────────────────────────────────────────"
     @echo "  just full_run                        Send emails for all 100 active suppliers"
     @echo "  just full_run_dry                    Generate emails but do NOT send"
+    @echo "  just weekly_run                      Send emails for weekly suppliers only"
+    @echo "  just weekly_run_dry                  Generate weekly emails but do NOT send"
+    @echo "  just fortnightly_run                 Send emails for fortnightly suppliers only"
+    @echo "  just fortnightly_run_dry             Generate fortnightly emails but do NOT send"
     @echo "  just test_mail SUPPLIER [FREQ]       Send email for one supplier"
     @echo "  just generate SUPPLIER [FREQ]        Generate + print email (no send)"
     @echo "  just generate_dry SUPPLIER [FREQ]    Print LLM prompt only (no generation)"
@@ -68,6 +72,22 @@ full_run:
 # Dry run — generate all emails but do not send
 full_run_dry:
     uv run python -m src.runners.full_run --dry-run
+
+# Weekly run — send emails for all weekly-frequency suppliers only
+weekly_run:
+    uv run python -m src.runners.full_run --run-for weekly
+
+# Weekly dry run — generate weekly emails but do not send
+weekly_run_dry:
+    uv run python -m src.runners.full_run --run-for weekly --dry-run
+
+# Fortnightly run — send emails for all fortnightly-frequency suppliers only
+fortnightly_run:
+    uv run python -m src.runners.full_run --run-for fortnightly
+
+# Fortnightly dry run — generate fortnightly emails but do not send
+fortnightly_run_dry:
+    uv run python -m src.runners.full_run --run-for fortnightly --dry-run
 
 # Check what each timer would run today (no Gemini, no email — instant)
 schedule_test:
@@ -246,3 +266,8 @@ diag_supplier supplier frequency="weekly":
 # Quick diagnostic without benchmark (faster)
 diag_quick:
     uv run python ollama_diagnostic.py --skip-bench
+
+# final run
+run:
+   just fortnightly_run
+   just weekly_run

@@ -9,18 +9,21 @@ DB_PATH = "data/processed/supplier_map.duckdb"
 def list_clients():
     con = duckdb.connect(DB_PATH, read_only=True)
     rows = con.execute("""
-        SELECT supplier_name, frequency, active, notes
+        SELECT supplier_name, frequency, active, account_manager
         FROM reporting_frequency
-        ORDER BY active DESC, frequency, supplier_name
+        ORDER BY account_manager NULLS LAST, frequency, supplier_name
     """).fetchall()
     con.close()
 
-    print(f"{'SUPPLIER':<35} {'FREQ':<14} {'ACTIVE'}")
-    print("-" * 60)
-    for name, freq, active, notes in rows:
+    print(f"{'SUPPLIER':<35} {'FREQ':<14} {'ACTIVE'}  {'ACCOUNT MANAGER'}")
+    print("-" * 85)
+    prev_manager = object()
+    for name, freq, active, manager in rows:
+        if manager != prev_manager:
+            print(f"\n  {manager or '(no manager)'}:")
+            prev_manager = manager
         marker = "✓" if active else "✗"
-        note = f"  [{notes}]" if notes else ""
-        print(f"{name:<35} {freq:<14} {marker}{note}")
+        print(f"  {name:<33} {freq:<14} {marker}")
     print(f"\nTotal: {len(rows)}  Active: {sum(1 for r in rows if r[2])}")
 
 

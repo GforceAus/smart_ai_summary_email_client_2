@@ -127,6 +127,8 @@ update_service() {
 install_schedule() {
     banner "Installing 3 systemd timers"
     mkdir -p ~/.config/systemd/user
+    DOCKER_BIN="$(which docker)"
+    log_info "Using docker at: $DOCKER_BIN"
 
     # ── weekly ────────────────────────────────────────────────────────────
     cat > ~/.config/systemd/user/smart-email-weekly.service <<SVC
@@ -136,7 +138,7 @@ Description=Smart AI Summary Email — weekly suppliers
 [Service]
 Type=oneshot
 WorkingDirectory=${SERVICE_DIR}
-ExecStart=/usr/bin/docker compose run --rm smart-email uv run python -m src.runners.full_run --run-for weekly
+ExecStart=${DOCKER_BIN} compose run --rm smart-email uv run python -m src.runners.full_run --run-for weekly
 StandardOutput=journal
 StandardError=journal
 SVC
