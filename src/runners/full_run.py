@@ -24,6 +24,7 @@ from dotenv import load_dotenv
 from src.generators.email_generator import generate_email, get_token_usage
 from src.cli.tasks import get_all_tasks_for_report
 from src.utils.graph_email import send_email
+from src.utils.markdown_email import render_email_html
 
 load_dotenv()
 
@@ -196,7 +197,12 @@ def main() -> None:
                     csv_content = _tasks_to_csv(tasks)
                     filename = f"{supplier}_{frequency}_tasks_{time.strftime('%Y-%m-%d')}.csv"
                     attachment = (filename, csv_content)
-                send_email(recipients, subject, body, attachment=attachment)
+                # The generator emits Markdown; mail clients show it literally,
+                # so render to HTML before sending.
+                send_email(
+                    recipients, subject, render_email_html(body),
+                    attachment=attachment, html=True,
+                )
                 status = "sent"
             else:
                 status = "generated"

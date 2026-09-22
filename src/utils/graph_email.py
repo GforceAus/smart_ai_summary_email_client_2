@@ -40,6 +40,7 @@ def send_email(
     subject: str,
     body: str,
     attachment: tuple[str, str] | None = None,  # (filename, csv_content)
+    html: bool = False,
 ) -> None:
     if not EMAIL_FROM:
         raise ValueError("EMAIL_FROM not set in .env — needed to send via Graph API")
@@ -47,7 +48,10 @@ def send_email(
     token = _get_token()
     message: dict = {
         "subject": subject,
-        "body": {"contentType": "Text", "content": body},
+        "body": {
+            "contentType": "HTML" if html else "Text",
+            "content": body,
+        },
         "toRecipients": [{"emailAddress": {"address": a}} for a in to],
     }
 
