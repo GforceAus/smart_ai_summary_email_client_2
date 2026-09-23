@@ -143,10 +143,10 @@ SVC
 
     cat > ~/.config/systemd/user/smart-email-weekly.timer <<TMR
 [Unit]
-Description=Smart Email — weekly (every Monday 23:00)
+Description=Smart Email — weekly (every Monday 05:00)
 
 [Timer]
-OnCalendar=Mon *-*-* 23:00:00
+OnCalendar=Mon *-*-* 05:00:00
 Persistent=true
 
 [Install]
@@ -168,10 +168,10 @@ SVC
 
     cat > ~/.config/systemd/user/smart-email-fortnightly.timer <<TMR
 [Unit]
-Description=Smart Email — fortnightly (every Monday 23:00; runner skips odd ISO weeks)
+Description=Smart Email — fortnightly (every Monday 05:00; runner skips odd ISO weeks)
 
 [Timer]
-OnCalendar=Mon *-*-* 23:00:00
+OnCalendar=Mon *-*-* 05:00:00
 Persistent=true
 
 [Install]
@@ -193,10 +193,10 @@ SVC
 
     cat > ~/.config/systemd/user/smart-email-monthly.timer <<TMR
 [Unit]
-Description=Smart Email — monthly (first Monday 23:00; runner gates the exact day)
+Description=Smart Email — monthly (first Monday 05:00; runner gates the exact day)
 
 [Timer]
-OnCalendar=Mon *-*-1..7 23:00:00
+OnCalendar=Mon *-*-1..7 05:00:00
 Persistent=true
 
 [Install]

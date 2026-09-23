@@ -774,7 +774,7 @@ def generate_email(
     logger.info(
         f"View returned: {summary.get('total_tasks')} tasks, "
         f"{len(tasks)} raw exception rows, "
-        f"{summary.get('completion_pct')}% completion"
+        f"{summary.get('done_tasks')} done + {summary.get('approved_tasks', 0)} approved"
     )
 
     # 2. Fetch few-shot examples
