@@ -96,7 +96,7 @@ def main() -> None:
     if args.supplier:
         con = duckdb.connect(DB_PATH, read_only=True)
         row = con.execute(
-            "SELECT supplier_name, frequency, account_manager FROM reporting_frequency "
+            "SELECT supplier_name, frequency, account_manager, COALESCE(show_completion_stats, true) FROM reporting_frequency "
             "WHERE active = true AND supplier_name = ?",
             [args.supplier]
         ).fetchone()
@@ -105,17 +105,17 @@ def main() -> None:
             logger.error(f"Supplier '{args.supplier}' not found or not active in reporting_frequency")
             return
         freq = args.frequency or row[1]
-        suppliers = [(row[0], freq, row[2])]
+        suppliers = [(row[0], freq, row[2], row[3])]
     else:
         con = duckdb.connect(DB_PATH, read_only=True)
         if args.run_for == "all":
             suppliers = con.execute(
-                "SELECT supplier_name, frequency, account_manager FROM reporting_frequency "
+                "SELECT supplier_name, frequency, account_manager, COALESCE(show_completion_stats, true) FROM reporting_frequency "
                 "WHERE active = true ORDER BY frequency, supplier_name"
             ).fetchall()
         else:
             suppliers = con.execute(
-                "SELECT supplier_name, frequency, account_manager FROM reporting_frequency "
+                "SELECT supplier_name, frequency, account_manager, COALESCE(show_completion_stats, true) FROM reporting_frequency "
                 "WHERE active = true AND frequency = ? ORDER BY supplier_name",
                 [args.run_for]
             ).fetchall()
@@ -152,7 +152,7 @@ def main() -> None:
         for freq in ["weekly", "fortnightly", "monthly"]:
             con = duckdb.connect(DB_PATH, read_only=True)
             rows = con.execute(
-                "SELECT supplier_name, account_manager FROM reporting_frequency "
+                "SELECT supplier_name, account_manager, COALESCE(show_completion_stats, true) FROM reporting_frequency "
                 "WHERE active = true AND frequency = ? ORDER BY supplier_name",
                 [freq]
             ).fetchall()
@@ -161,7 +161,7 @@ def main() -> None:
             label = "WOULD RUN" if would_run else f"SKIP — {reasons[freq]}"
             print(f"\n{freq.upper()} — {len(rows)} suppliers — {label}")
             if would_run and args.run_for in ("all", freq):
-                for name, manager in rows:
+                for name, manager, _show in rows:
                     print(f"  {name:<35} → {manager or '(no manager)'}")
 
         print(f"\n{'='*65}\n")
@@ -170,7 +170,7 @@ def main() -> None:
     logger.info(f"Running {len(suppliers)} suppliers...")
 
     results = []
-    for supplier, frequency, account_manager in suppliers:
+    for supplier, frequency, account_manager, show_completion in suppliers:
         t0 = time.time()
         mem_before, _ = tracemalloc.get_traced_memory()
         status = "ok"
@@ -184,7 +184,7 @@ def main() -> None:
                 recipients.append(e)
 
         try:
-            body = generate_email(supplier, frequency)
+            body = generate_email(supplier, frequency, show_completion=show_completion)
             if not body:
                 status = "no_data"
             elif dry_run:

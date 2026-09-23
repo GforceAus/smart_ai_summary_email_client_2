@@ -153,7 +153,17 @@ Bullet list of notable rep observations with store context.
 Omit this section entirely if no comments exist.
 
 ## Summary
-1-2 sentences: the single most important takeaway and any recommended follow-up."""
+1-2 sentences: the single most important takeaway and any recommended follow-up.
+
+## Positive Overall Result
+1-2 sentences closing on the network-level result: that most stores reported no
+significant concerns, and that issues found were actioned or are isolated.
+This is a network-level judgement, NOT a restatement of the Completed Activity
+counts — do not repeat those figures here.
+OMIT THIS SECTION ENTIRELY when any row carries severity "critical". Signing off
+on a positive when a rep was nearly injured reads as dismissive. Where severity
+is "high" only, keep it but qualify it — "no network-wide concerns" rather than
+"no concerns"."""
 
 
 # ── Task Aggregation ───────────────────────────────────────────────────────
@@ -500,6 +510,7 @@ def build_prompt(
     supplier: str,
     frequency: str,
     descriptions: dict | None = None,
+    show_completion: bool = True,
 ) -> tuple[str, int]:
     """Build user message. Returns (prompt_text, token_estimate)."""
     parts = []
@@ -519,6 +530,20 @@ def build_prompt(
         f"Task aggregation: {len(tasks)} raw rows → {len(aggregated)} grouped rows"
     )
 
+    if not show_completion:
+        # Some account managers do not want completion/outstanding-task
+        # language in client-facing summaries. Per-supplier, not global:
+        # other managers rely on the completion rate.
+        parts.append(
+            "## Tone Override for this supplier\n"
+            "Do NOT mention task completion in any form: no completion rate or "
+            "percentage, no 'X of Y tasks completed', no count of tasks not "
+            "completed, outstanding, in progress or rolled over. Report what "
+            "was found, not how much of the work was finished. The Overview "
+            "should instead cover visit volume and general network health. "
+            "Still name stores whose issues need follow-up — the restriction "
+            "is on task-completion metrics, not on reporting problems."
+        )
     parts.append(f"## Data Payload — {supplier} ({frequency})")
     parts.append("### Summary Metrics")
     parts.append(json.dumps(clean_summary, indent=2, default=str))
@@ -643,6 +668,8 @@ def check_store_counts(text: str) -> list[str]:
             # Strip list bullets and bold markers from both ends, e.g.
             # "*   **ALICE SPRINGS" -> "ALICE SPRINGS".
             p = re.sub(r"^[\s\*\-•]+", "", part)
+            # Drop an inline annotation, e.g. "BUNDABERG (awaiting follow-up)".
+            p = re.sub(r"\s*\([^)]*\)\s*$", "", p)
             p = re.sub(r"[\s\*]+$", "", p)
             if re.fullmatch(NAME, p):
                 out.append(p)
@@ -650,9 +677,16 @@ def check_store_counts(text: str) -> list[str]:
 
     problems = []
     for i, line in enumerate(text.splitlines(), 1):
-        for m in re.finditer(r"(\d+)\s*\**\s*stores?\b", line, re.I):
+        matches = list(re.finditer(r"(\d+)\s*\**\s*stores?\b", line, re.I))
+        for idx, m in enumerate(matches):
             claimed = int(m.group(1))
-            before, after = line[:m.start()], line[m.end():]
+            # A store list belongs to the NEAREST count, so bound the search at
+            # the neighbouring counts. Without this, a paragraph like
+            # "19 stores ... 17 stores ... 9 stores: A, B, C" pairs that one
+            # list with all three counts and reports two false mismatches.
+            prev_end = matches[idx - 1].end() if idx else 0
+            next_start = matches[idx + 1].start() if idx + 1 < len(matches) else len(line)
+            before, after = line[prev_end:m.start()], line[m.end():next_start]
 
             # A list immediately preceding the count, e.g. "**A, B, C**: 8 stores"
             lead = re.search(r"([^:]+):\s*\**\s*$", before)
@@ -687,6 +721,7 @@ def generate_email(
     supplier: str,
     frequency: str,
     dry_run: bool = False,
+    show_completion: bool = True,
 ) -> str | None:
 
     # 1. Fetch from PostgreSQL view
@@ -728,7 +763,8 @@ def generate_email(
 
     # 3. Build prompt (aggregation + strip happens inside)
     user_prompt, token_estimate = build_prompt(
-        summary, tasks, examples, supplier, frequency, descriptions
+        summary, tasks, examples, supplier, frequency, descriptions,
+        show_completion,
     )
 
     logger.info(f"Prompt token estimate: ~{token_estimate}")
