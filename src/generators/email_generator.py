@@ -276,7 +276,7 @@ def aggregate_tasks(tasks: list[dict], descriptions: dict | None = None) -> list
                 # in_progress is a meaningful state, not noise: rolled-over
                 # tasks (e.g. brochures not yet delivered) stay in_progress by
                 # design, so surface it rather than filtering these rows out.
-                if t.get("status") == "in_progress":
+                if t.get("status") not in ("done", "approved"):
                     g["outstanding"].append(store)
 
         # Comments/cannot-complete belong to the task, not one question — attach
@@ -432,7 +432,11 @@ def fetch_task_context(supplier: str, date_from: str, date_to: str) -> tuple[lis
                 WHERE t.supplier_name = %s
                   AND t.task_date >= %s::date
                   AND t.task_date <= %s::date
-                  AND t.task_status IN ('done', 'in_progress')
+                  -- Completed work only. 'approved' is done-and-signed-off and
+                  -- carries answered questions at the same density as 'done', so
+                  -- excluding it lost real findings. 'in_progress' and
+                  -- 'rolled_over' are deliberately out: they are unfinished.
+                  AND t.task_status IN ('done', 'approved')
                 ORDER BY t.task_name, t.store_name
             """, (supplier, date_from, date_to))
 
@@ -574,7 +578,10 @@ def build_prompt(
     parts.append(
         f"Write the supplier activity summary email for {supplier} "
         f"covering the {frequency} period from "
-        f"{summary.get('date_from')} to {summary.get('date_to')}."
+        f"{summary.get('date_from')} to {summary.get('date_to')}.\n"
+        f"State that task date range explicitly in the Overview's first "
+        f"sentence, so the reader knows exactly which visits are covered "
+        f"and does not compare it against a different period."
     )
 
     prompt = "\n\n".join(parts)

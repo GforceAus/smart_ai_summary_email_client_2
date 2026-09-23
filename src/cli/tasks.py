@@ -94,7 +94,7 @@ def get_all_tasks_for_report(supplier: str, frequency: str) -> list[dict]:
                     WHERE t.supplier_name = %s
                       AND t.task_date >= %s::date
                       AND t.task_date <= %s::date
-                      AND t.task_status IN ('done', 'in_progress')
+                      AND t.task_status IN ('done', 'approved')
                     ORDER BY t.task_name, t.store_name, tq.question
                 """, (supplier, date_from, date_to))
 
