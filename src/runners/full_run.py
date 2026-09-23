@@ -61,9 +61,43 @@ def _tasks_to_csv(tasks: list[dict]) -> str:
     return buf.getvalue()
 
 
+
+def schedule_due(freq: str, today: datetime.date | None = None) -> tuple[bool, str]:
+    """
+    Is this cohort due today?
+
+    weekly      — every Monday
+    fortnightly — Mondays of even ISO weeks (FORTNIGHTLY_PARITY=odd to flip)
+    monthly     — the first Monday of the month
+    """
+    today = today or datetime.date.today()
+    iso_week = today.isocalendar()[1]
+    is_monday = today.isoweekday() == 1
+    parity = os.environ.get("FORTNIGHTLY_PARITY", "even")
+    week_matches = (iso_week % 2 == 1) if parity == "odd" else (iso_week % 2 == 0)
+    is_first_monday = is_monday and today.day <= 7
+
+    if freq == "weekly":
+        return (is_monday, "Monday" if is_monday else f"not Monday ({today:%A})")
+    if freq == "fortnightly":
+        if not is_monday:
+            return (False, f"not Monday ({today:%A})")
+        return (week_matches,
+                f"ISO week {iso_week} is {'even' if iso_week % 2 == 0 else 'odd'}, parity={parity}")
+    if freq == "monthly":
+        if not is_monday:
+            return (False, f"not Monday ({today:%A})")
+        return (is_first_monday,
+                "first Monday of the month" if is_first_monday
+                else f"not the first Monday (day {today.day})")
+    return (True, "no schedule gate")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true", help="Generate emails but do not send")
+    parser.add_argument("--ignore-schedule", action="store_true",
+                        help="Run even if this cohort is not due today")
     parser.add_argument("--supplier", help="Run a single supplier only")
     parser.add_argument("--frequency", choices=["weekly", "fortnightly", "monthly"], help="Frequency for single-supplier run")
     parser.add_argument("--run-for", choices=["weekly", "fortnightly", "monthly", "all"], default="all",
@@ -76,17 +110,16 @@ def main() -> None:
     if dry_run:
         logger.info("DRY RUN — emails will be generated but NOT sent")
 
-    # Fortnightly week-parity gate: run every other Tuesday via ISO week number.
-    # Default: odd weeks (1,3,5...). Set FORTNIGHTLY_PARITY=even in .env to flip.
-    if args.run_for == "fortnightly":
-        iso_week = datetime.date.today().isocalendar()[1]
-        parity = os.environ.get("FORTNIGHTLY_PARITY", "odd")
-        is_odd = iso_week % 2 == 1
-        should_run = is_odd if parity == "odd" else not is_odd
-        if not should_run:
-            logger.info(f"Skipping fortnightly run — ISO week {iso_week} is {'odd' if is_odd else 'even'}, configured for {parity} weeks")
+    # Schedule gates. These apply to real runs, not just --check-only: the
+    # systemd timer is no longer the only thing deciding whether a cohort is
+    # due, so a manual or mistimed invocation cannot send an off-schedule batch.
+    # Use --ignore-schedule to override deliberately.
+    if args.run_for in ("weekly", "fortnightly", "monthly") and not args.ignore_schedule:
+        due, reason = schedule_due(args.run_for)
+        if not due:
+            logger.info(f"Skipping {args.run_for} run — {reason}")
             return
-        logger.info(f"Fortnightly run — ISO week {iso_week} ({parity})")
+        logger.info(f"{args.run_for.capitalize()} run is due — {reason}")
 
     tracemalloc.start()
     t_total = time.time()
@@ -124,45 +157,28 @@ def main() -> None:
     if args.check_only:
         today = datetime.date.today()
         iso_week = today.isocalendar()[1]
-        weekday = today.isoweekday()  # 1=Mon … 7=Sun
-        parity = os.environ.get("FORTNIGHTLY_PARITY", "odd")
-        is_tuesday = weekday == 1  # Monday
-        is_last_day = (today + datetime.timedelta(days=1)).month != today.month
-        is_odd_week = iso_week % 2 == 1
+        parity = os.environ.get("FORTNIGHTLY_PARITY", "even")
 
         print(f"\n{'='*65}")
-        print(f"SCHEDULE CHECK — {today}  "
-              f"({'Monday' if is_tuesday else today.strftime('%A')}, "
-              f"ISO week {iso_week} {'odd' if is_odd_week else 'even'}, "
-              f"{'last day of month' if is_last_day else 'not last day'})")
+        print(f"SCHEDULE CHECK - {today}  ({today:%A}, ISO week {iso_week} "
+              f"{'even' if iso_week % 2 == 0 else 'odd'}, fortnightly parity={parity})")
         print(f"{'='*65}")
-
-        checks = {
-            "weekly":      is_tuesday,
-            "fortnightly": is_tuesday and (is_odd_week if parity == "odd" else not is_odd_week),
-            "monthly":     is_last_day,
-        }
-        reasons = {
-            "weekly":      "not Monday" if not is_tuesday else "",
-            "fortnightly": ("not Monday" if not is_tuesday
-                            else f"wrong ISO week (week {iso_week} is {'odd' if is_odd_week else 'even'}, parity={parity})"),
-            "monthly":     f"not last day of month ({today.strftime('%b %d')})" if not is_last_day else "",
-        }
 
         for freq in ["weekly", "fortnightly", "monthly"]:
             con = duckdb.connect(DB_PATH, read_only=True)
             rows = con.execute(
-                "SELECT supplier_name, account_manager, COALESCE(show_completion_stats, true) FROM reporting_frequency "
-                "WHERE active = true AND frequency = ? ORDER BY supplier_name",
+                "SELECT supplier_name, account_manager, COALESCE(show_completion_stats, true) "
+                "FROM reporting_frequency WHERE active = true AND frequency = ? ORDER BY supplier_name",
                 [freq]
             ).fetchall()
             con.close()
-            would_run = checks[freq]
-            label = "WOULD RUN" if would_run else f"SKIP — {reasons[freq]}"
-            print(f"\n{freq.upper()} — {len(rows)} suppliers — {label}")
-            if would_run and args.run_for in ("all", freq):
+            # Same helper the real run uses, so the check cannot drift from it.
+            due, reason = schedule_due(freq, today)
+            label = "WOULD RUN" if due else f"SKIP - {reason}"
+            print(f"\n{freq.upper()} - {len(rows)} suppliers - {label}")
+            if due and args.run_for in ("all", freq):
                 for name, manager, _show in rows:
-                    print(f"  {name:<35} → {manager or '(no manager)'}")
+                    print(f"  {name:<35} -> {manager or '(no manager)'}")
 
         print(f"\n{'='*65}\n")
         return

@@ -77,9 +77,17 @@ RULES:
 - Write in a professional but direct business tone
 - Never invent data — only use what is provided in the JSON payload
 - Do not include greetings, sign-off, or signature blocks
-- Completion percentages and store counts must match the summary JSON exactly
+- Store counts must match the summary JSON exactly
 - Flag issues clearly but without alarm — these are routine operational summaries
 - When many stores share the same issue, summarise as a group (e.g. "25 stores reported stock not ranged")
+
+COMPLETION (strict):
+- Report completed work ONLY. Quote done_tasks and the stores visited.
+- NEVER state how much was not completed: no completion percentage, no
+  "X of Y tasks", no count of tasks in progress, outstanding, rolled over,
+  not yet done, or marked cannot-complete. Do not imply a shortfall.
+- Findings are still reported in full — the restriction is on task-completion
+  shortfall metrics, never on the issues themselves.
 
 SECTIONING:
 - The Task Definitions block tells you what each task covers. Derive the
@@ -131,13 +139,14 @@ COUNTING (strict):
   group's count verbatim, or describe the theme without a number. A combined
   count with no store list cannot be checked and has been wrong before.
 
-- still_in_progress_stores lists stores where the task is not yet closed —
-  typically rolled over to the next visit. Describe these as outstanding or
-  awaiting follow-up, not as completed.
+- still_in_progress_stores is provided for context only. Do NOT describe these
+  stores as outstanding, awaiting follow-up, or not yet complete — report the
+  underlying finding (e.g. brochures not received) without the task state.
 
 OUTPUT FORMAT:
 ## Overview
-2-3 sentences covering visit volume, completion rate, and general network health.
+2-3 sentences covering visit volume (stores visited, tasks completed, reps
+active) and general network health. No completion rate, no shortfall.
 
 ## Completed Activity
 Paragraph summarising what was done across stores. Include states if notable patterns exist.
@@ -663,6 +672,10 @@ def check_store_counts(text: str) -> list[str]:
     NAME = r"[A-Z][A-Z0-9 '&./\-]{2,}"
 
     def names_in(segment: str) -> list[str]:
+        # Remove parentheticals BEFORE splitting: an annotation may itself
+        # contain a comma ("ESPERANCE (beading, stock put anywhere)"), which
+        # would otherwise split one store into two unrecognisable fragments.
+        segment = re.sub(r"\([^)]*\)", "", segment)
         out = []
         for part in segment.split(","):
             # Strip list bullets and bold markers from both ends, e.g.
@@ -810,7 +823,14 @@ def generate_email(
     # 5. Validate
     missing = validate_output(output)
     if missing:
-        logger.warning(f"Output missing sections: {missing}")
+        # A missing required section means the model stopped early — the body
+        # ends mid-sentence. Previously this only warned and the partial email
+        # was sent. Refuse it instead; full_run records the error and moves on.
+        logger.error(
+            f"Incomplete output — missing {missing}. "
+            f"Generated {len(output)} chars; refusing to send a partial email."
+        )
+        return None
 
     count_problems = check_store_counts(output)
     for problem in count_problems:
